@@ -1,0 +1,23 @@
+# 密钥与敏感文件（严禁提交）
+说明.txt
+config.json
+release/search-mcp-v1.0/config.json
+release/search-mcp-v1.0.zip
+release/*/logs/
+release/_test/
+logs/
+*.log
+
+# 快照/临时文件
+snap*.txt
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+*.spec
+venv/
+.venv/
