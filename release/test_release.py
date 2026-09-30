@@ -60,7 +60,7 @@ async def run(exe_dir: Path) -> int:
             server_name = init.server_info.name
             check(
                 "MCP 握手",
-                server_name == "search-mcp",
+                server_name in {"search-mcp", "Qianxv-search-mcp"},
                 f"server={server_name} protocol={init.protocol_version}",
             )
 

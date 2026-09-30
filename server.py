@@ -1,8 +1,15 @@
-"""MCP 服务入口：注册 search / extract 工具，stdio 传输启动。"""
+"""MCP 服务入口：注册 search / extract 工具，支持 stdio 和 HTTP。"""
 
 from __future__ import annotations
 
+import argparse
+import asyncio
 import sys
+from collections.abc import AsyncIterator
+from contextlib import AsyncExitStack, asynccontextmanager
+
+import httpx
+import uvicorn
 
 from mcp.server.mcpserver import MCPServer
 
@@ -21,7 +28,45 @@ _router = SearchRouter(build_providers(_cfg), _cfg.breaker_seconds)
 _extract_router = ExtractRouter(
     build_extract_providers(_cfg), _cfg.breaker_seconds
 )
-mcp = MCPServer("Qianxv-search-mcp")
+_client_lock = asyncio.Lock()
+_client_stack: AsyncExitStack | None = None
+_client_users = 0
+
+
+@asynccontextmanager
+async def _lifespan(_server: MCPServer) -> AsyncIterator[None]:
+    global _client_stack, _client_users
+    providers = (*_router.providers, *_extract_router.providers)
+    async with _client_lock:
+        if _client_users == 0:
+            stack = AsyncExitStack()
+            try:
+                for provider in providers:
+                    provider._http_client = await stack.enter_async_context(
+                        httpx.AsyncClient(timeout=provider.timeout)
+                    )
+            except BaseException:
+                for provider in providers:
+                    provider._http_client = None
+                await stack.aclose()
+                raise
+            _client_stack = stack
+        _client_users += 1
+    try:
+        yield
+    finally:
+        async with _client_lock:
+            _client_users -= 1
+            if _client_users == 0:
+                for provider in providers:
+                    provider._http_client = None
+                stack = _client_stack
+                _client_stack = None
+                if stack is not None:
+                    await stack.aclose()
+
+
+mcp = MCPServer("Qianxv-search-mcp", lifespan=_lifespan)
 
 _EXTRACT_MAX_CHARS = 8000
 
@@ -87,9 +132,58 @@ def _ensure_utf8_stdio() -> None:
                 pass
 
 
+def _port(value: str) -> int:
+    try:
+        port = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("port must be an integer") from exc
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError("port must be between 1 and 65535")
+    return port
+
+
+async def _run_both(port: int) -> None:
+    app = mcp.streamable_http_app(host="127.0.0.1")
+    config = uvicorn.Config(app, host="127.0.0.1", port=port)
+    http_server = uvicorn.Server(config)
+    http_task = asyncio.create_task(http_server.serve())
+    stdio_task = asyncio.create_task(mcp.run_stdio_async())
+    try:
+        done, _ = await asyncio.wait(
+            (http_task, stdio_task), return_when=asyncio.FIRST_COMPLETED
+        )
+        if stdio_task in done:
+            await stdio_task
+            await http_task
+        else:
+            await http_task
+    finally:
+        for task in (stdio_task, http_task):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(stdio_task, http_task, return_exceptions=True)
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Qianxv search MCP server")
+    parser.add_argument(
+        "--transport",
+        choices=("stdio", "streamable-http", "both"),
+        default="stdio",
+    )
+    parser.add_argument("--port", type=_port)
+    args = parser.parse_args()
+    if args.transport == "stdio" and args.port is not None:
+        parser.error("--port requires --transport streamable-http or both")
     _ensure_utf8_stdio()
-    mcp.run(transport="stdio")
+    if args.transport == "stdio":
+        mcp.run(transport="stdio")
+    elif args.transport == "streamable-http":
+        mcp.run(
+            transport="streamable-http", host="127.0.0.1", port=args.port or 8000
+        )
+    else:
+        asyncio.run(_run_both(args.port or 8000))
 
 
 if __name__ == "__main__":

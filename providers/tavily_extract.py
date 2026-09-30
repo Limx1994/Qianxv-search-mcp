@@ -39,8 +39,13 @@ class TavilyExtractProvider(ExtractProvider):
         content = str(item.get("raw_content") or "")
         if not content:
             raise ProviderError(self.name, "empty extracted content")
+        title = next(
+            (line[2:].strip() for line in content.splitlines()
+             if line.startswith("# ") and line[2:].strip()),
+            "",
+        )
         return ExtractResult(
-            title="",
+            title=title,
             url=str(item.get("url") or url),
             content=content,
             source=self.name,

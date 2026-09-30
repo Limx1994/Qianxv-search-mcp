@@ -8,10 +8,11 @@ from pathlib import Path
 
 import pytest
 
-from config_loader import ConfigError, load_config
+from config_loader import ConfigError, NodeConfig, load_config
 from providers import build_extract_providers
 from providers.base import ProviderError
 from providers.extract_base import ExtractProvider, ExtractResult
+from providers.tavily_extract import TavilyExtractProvider
 from search_router import AllProvidersFailedError, ExtractRouter
 
 
@@ -52,6 +53,29 @@ def test_extract_failover_switches_to_next_node():
     assert result.content.startswith("# Hello")
     assert p1.calls == 1
     assert p2.calls == 1
+
+
+@pytest.mark.parametrize(
+    ("content", "title"),
+    [("# Real Page\nBody", "Real Page"), ("Body without heading", "")],
+)
+def test_tavily_extract_title_from_markdown(monkeypatch, content, title):
+    node = NodeConfig(
+        name="tavily", type="tavily_extract", enabled=True,
+        api_key="test-key", timeout_seconds=5,
+        options={"endpoint": "https://example.test/extract"},
+    )
+    provider = TavilyExtractProvider(node)
+
+    async def fake_post(_url, _body):
+        return {"results": [{
+            "url": "https://example.test/page", "raw_content": content,
+        }]}
+
+    monkeypatch.setattr(provider, "_post_json", fake_post)
+    result = run(provider.extract("https://example.test/page"))
+    assert result.title == title
+    assert result.content == content
 
 
 def test_extract_all_providers_failed_raises():

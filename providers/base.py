@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any
 
@@ -39,6 +40,7 @@ class SearchProvider(ABC):
             getattr(node_cfg, "timeout_seconds", 10.0)
         )
         self.options: dict = dict(getattr(node_cfg, "options", {}))
+        self._http_client: httpx.AsyncClient | None = None
 
     @abstractmethod
     async def search(
@@ -85,15 +87,20 @@ class SearchProvider(ABC):
         headers = self._auth_headers()
         if extra_headers:
             headers.update(extra_headers)
+        client_context = (
+            nullcontext(self._http_client)
+            if self._http_client is not None
+            else httpx.AsyncClient(timeout=self.timeout)
+        )
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with client_context as client:
                 if method == "GET":
                     resp = await client.get(
-                        url, headers=headers, params=params
+                        url, headers=headers, params=params, timeout=self.timeout
                     )
                 else:
                     resp = await client.post(
-                        url, headers=headers, json=body
+                        url, headers=headers, json=body, timeout=self.timeout
                     )
         except httpx.TimeoutException as exc:
             raise ProviderError(self.name, f"timeout: {exc}") from exc

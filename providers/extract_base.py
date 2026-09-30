@@ -7,6 +7,7 @@ HTTP 失败判定逻辑与 base.py 的 SearchProvider 保持一致
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any
 
@@ -36,6 +37,7 @@ class ExtractProvider(ABC):
             getattr(node_cfg, "timeout_seconds", 10.0)
         )
         self.options: dict = dict(getattr(node_cfg, "options", {}))
+        self._http_client: httpx.AsyncClient | None = None
 
     @abstractmethod
     async def extract(self, url: str) -> ExtractResult:
@@ -59,10 +61,16 @@ class ExtractProvider(ABC):
         self, url: str, body: dict[str, Any]
     ) -> dict[str, Any]:
         """统一 POST 请求：超时/网络/非2xx/解析失败均转 ProviderError。"""
+        client_context = (
+            nullcontext(self._http_client)
+            if self._http_client is not None
+            else httpx.AsyncClient(timeout=self.timeout)
+        )
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with client_context as client:
                 resp = await client.post(
-                    url, headers=self._auth_headers(), json=body
+                    url, headers=self._auth_headers(), json=body,
+                    timeout=self.timeout,
                 )
         except httpx.TimeoutException as exc:
             raise ProviderError(self.name, f"timeout: {exc}") from exc
