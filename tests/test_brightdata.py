@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 
+import httpx
 import pytest
 
 from config_loader import NodeConfig
@@ -147,3 +148,117 @@ def test_parse_sse_extracts_last_data_json():
     payload = BrightDataProvider._parse_sse(text)
     assert payload == {"jsonrpc": "2.0", "id": 1, "result": {"a": 1}}
     assert BrightDataProvider._parse_sse("no data lines") is None
+
+
+def _tool_reply(query):
+    payload = {"result": {"content": [{
+        "type": "text", "text": _payload([
+            {"title": query, "link": "https://example.test/a"},
+        ]),
+    }]}}
+    return httpx.Response(200, text=f"data: {json.dumps(payload)}\n")
+
+
+def test_shared_client_isolates_sessions(monkeypatch):
+    provider = _make_provider()
+    requests = []
+    sessions = []
+
+    async def exercise():
+        initialized = asyncio.Event()
+
+        async def respond(request):
+            body = json.loads(request.content)
+            method = body["method"]
+            session = request.headers.get("mcp-session-id")
+            requests.append((method, session, request))
+            if method == "initialize":
+                assert session is None
+                session = f"session-{len(sessions) + 1}"
+                sessions.append(session)
+                if len(sessions) == 2:
+                    initialized.set()
+                await asyncio.wait_for(initialized.wait(), 2)
+                return httpx.Response(200, headers={"mcp-session-id": session})
+            if method == "notifications/initialized":
+                return httpx.Response(200)
+            query = body["params"]["arguments"]["query"]
+            assert session == {"first": "session-1", "second": "session-2",
+                               "third": "session-3"}[query]
+            return _tool_reply(query)
+
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(respond),
+        ) as client:
+            provider._http_client = client
+            headers = dict(client.headers)
+
+            def no_client(**kwargs):
+                raise AssertionError("shared client must be reused")
+
+            monkeypatch.setattr(httpx, "AsyncClient", no_client)
+            results = await asyncio.gather(
+                provider.search("first", 1), provider.search("second", 1),
+            )
+            assert [items[0].title for items in results] == ["first", "second"]
+            assert (await provider.search("third", 1))[0].title == "third"
+            assert not client.is_closed
+            assert dict(client.headers) == headers
+        assert client.is_closed
+
+    run(exercise())
+    assert len(requests) == 9
+    for session in sessions:
+        assert [method for method, sid, _ in requests if sid == session] == [
+            "notifications/initialized", "tools/call",
+        ]
+    for _, _, request in requests:
+        assert request.headers["Authorization"] == "Bearer bd-key"
+        assert request.headers["Accept"] == "application/json, text/event-stream"
+        assert request.headers["Content-Type"] == "application/json"
+        assert request.extensions["timeout"]["read"] == provider.timeout
+
+
+@pytest.mark.parametrize("failure", [None, "timeout", "network"])
+def test_mcp_fallback_closes_client(monkeypatch, failure):
+    provider = _make_provider()
+    requests = []
+
+    def respond(request):
+        body = json.loads(request.content)
+        requests.append(body["method"])
+        assert request.headers["Authorization"] == "Bearer bd-key"
+        assert request.extensions["timeout"]["read"] == provider.timeout
+        if failure == "timeout":
+            raise httpx.ReadTimeout("test timeout", request=request)
+        if failure == "network":
+            raise httpx.ConnectError("test network", request=request)
+        if body["method"] == "initialize":
+            return httpx.Response(200, headers={"mcp-session-id": "session"})
+        assert request.headers["mcp-session-id"] == "session"
+        if body["method"] == "notifications/initialized":
+            return httpx.Response(200)
+        return _tool_reply("query")
+
+    async def exercise():
+        client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+        created = []
+
+        def make_client(**kwargs):
+            assert kwargs == {"timeout": provider.timeout}
+            created.append(client)
+            return client
+
+        monkeypatch.setattr(httpx, "AsyncClient", make_client)
+        if failure:
+            with pytest.raises(ProviderError, match=failure):
+                await provider.search("query", 1)
+        else:
+            assert (await provider.search("query", 1))[0].title == "query"
+        assert created == [client]
+        assert client.is_closed
+
+    run(exercise())
+    assert requests == (["initialize"] if failure else [
+        "initialize", "notifications/initialized", "tools/call",
+    ])

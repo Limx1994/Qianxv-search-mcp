@@ -7,11 +7,13 @@ import asyncio
 import sys
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
+from typing import Annotated
 
 import httpx
 import uvicorn
 
 from mcp.server.mcpserver import MCPServer
+from pydantic import Field
 
 from config_loader import load_config
 from logger import setup_logging
@@ -72,7 +74,9 @@ _EXTRACT_MAX_CHARS = 8000
 
 
 @mcp.tool()
-async def search(query: str, max_results: int = 5) -> str:
+async def search(
+    query: str, max_results: Annotated[int, Field(ge=1)] = 5
+) -> str:
     """联网搜索工具。
 
     在多个搜索源（AnySearch / 百度千帆 / 火山豆包 / Tavily /
@@ -81,8 +85,10 @@ async def search(query: str, max_results: int = 5) -> str:
 
     Args:
         query: 搜索关键词或问题。
-        max_results: 期望返回的最大结果数，默认 5。
+        max_results: 期望返回的最大结果数，必须大于等于 1，默认 5。
     """
+    if max_results < 1:
+        raise ValueError("max_results must be greater than or equal to 1")
     try:
         results, provider = await _router.search(query, max_results)
     except AllProvidersFailedError as exc:

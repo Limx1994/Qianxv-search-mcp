@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import socket
 import sys
 from pathlib import Path
@@ -186,11 +187,44 @@ def test_http_port_conflict(transport: str) -> None:
     asyncio.run(exercise())
 
 
-@pytest.mark.skipif(not os.getenv("MCP_TEST_EXE"), reason="exe path not set")
-def test_release_exe_modes() -> None:
-    exe = Path(os.environ["MCP_TEST_EXE"]).resolve()
-    assert exe.is_file()
-    assert (exe.parent / "config.json").is_file()
+@pytest.fixture
+def release_exe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    value = os.getenv("MCP_TEST_EXE")
+    if not value:
+        pytest.skip("exe path not set")
+    source = Path(value).resolve()
+    assert source.is_file()
+    app = tmp_path / "app"
+    app.mkdir()
+    exe = app / source.name
+    shutil.copy2(source, exe)
+    internal = source.parent / "_internal"
+    if internal.is_dir():
+        shutil.copytree(internal, app / "_internal")
+    config = json.loads(
+        (source.parent / "config.example.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    for node in (*config["nodes"], *config.get("extract_nodes", [])):
+        node["enabled"] = False
+        node["api_key"] = ""
+    (app / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    temp = tmp_path / "temp"
+    temp.mkdir()
+    monkeypatch.setenv("TEMP", str(temp))
+    monkeypatch.setenv("TMP", str(temp))
+    return exe
+
+
+def _check_no_mei() -> None:
+    assert not list(Path(os.environ["TEMP"]).glob("_MEI*")), (
+        "release exe extracted dependencies into TEMP"
+    )
+
+
+def test_release_exe_modes(release_exe: Path) -> None:
+    exe = release_exe
 
     async def exercise() -> None:
         proc = await _start(executable=exe)
@@ -226,5 +260,67 @@ def test_release_exe_modes() -> None:
             await _check_http(port)
         finally:
             await _stop(proc)
+
+        for transport in ("streamable-http", "both"):
+            with socket.socket() as occupied:
+                occupied.bind(("127.0.0.1", 0))
+                occupied.listen()
+                proc = await _start(
+                    "--transport", transport, "--port",
+                    str(occupied.getsockname()[1]), executable=exe,
+                )
+                try:
+                    _, stderr = await asyncio.wait_for(proc.communicate(), 15)
+                    assert proc.returncode != 0
+                    assert b"error" in stderr.lower()
+                finally:
+                    await _stop(proc)
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("transport", ["stdio", "streamable-http", "both"])
+def test_release_no_temp_repeated(release_exe: Path, transport: str) -> None:
+    async def exercise() -> None:
+        for _ in range(5):
+            port = _free_port()
+            args = () if transport == "stdio" else (
+                "--transport", transport, "--port", str(port),
+            )
+            proc = await _start(*args, executable=release_exe)
+            try:
+                if transport in ("stdio", "both"):
+                    await _check_stdio(proc)
+                if transport != "stdio":
+                    await _wait_http(port)
+                    await _check_http(port)
+                _check_no_mei()
+                if transport == "stdio":
+                    proc.stdin.close()
+                    assert await asyncio.wait_for(proc.wait(), 15) == 0
+            finally:
+                await _stop(proc)
+            _check_no_mei()
+
+    asyncio.run(exercise())
+
+
+def test_release_no_temp_concurrent(release_exe: Path) -> None:
+    async def exercise() -> None:
+        processes = []
+        try:
+            for _ in range(3):
+                processes.append(await _start(executable=release_exe))
+            await asyncio.gather(*(_check_stdio(proc) for proc in processes))
+            _check_no_mei()
+            for proc in processes:
+                proc.stdin.close()
+            codes = await asyncio.wait_for(
+                asyncio.gather(*(proc.wait() for proc in processes)), 15
+            )
+            assert codes == [0, 0, 0]
+        finally:
+            await asyncio.gather(*(_stop(proc) for proc in processes))
+        _check_no_mei()
 
     asyncio.run(exercise())

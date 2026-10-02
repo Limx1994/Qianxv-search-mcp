@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import re
+from contextlib import nullcontext
 from typing import Any
 
 import httpx
@@ -65,12 +66,17 @@ class BrightDataProvider(SearchProvider):
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
         }
+        client_context = (
+            nullcontext(self._http_client)
+            if self._http_client is not None
+            else httpx.AsyncClient(timeout=self.timeout)
+        )
         try:
-            async with httpx.AsyncClient(
-                timeout=self.timeout, headers=headers
-            ) as client:
+            async with client_context as client:
                 resp = await client.post(
                     self.endpoint,
+                    headers=headers,
+                    timeout=self.timeout,
                     json={
                         "jsonrpc": "2.0",
                         "id": 1,
@@ -87,9 +93,11 @@ class BrightDataProvider(SearchProvider):
                 )
                 session_id = resp.headers.get("mcp-session-id", "")
                 if session_id:
-                    client.headers["mcp-session-id"] = session_id
+                    headers["mcp-session-id"] = session_id
                 await client.post(
                     self.endpoint,
+                    headers=headers,
+                    timeout=self.timeout,
                     json={
                         "jsonrpc": "2.0",
                         "method": "notifications/initialized",
@@ -97,6 +105,8 @@ class BrightDataProvider(SearchProvider):
                 )
                 resp = await client.post(
                     self.endpoint,
+                    headers=headers,
+                    timeout=self.timeout,
                     json={
                         "jsonrpc": "2.0",
                         "id": 2,
