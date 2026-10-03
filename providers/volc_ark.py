@@ -9,9 +9,12 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from .base import ProviderError, SearchProvider, SearchResult
+
+logger = logging.getLogger("mcp_search")
 
 
 class VolcArkProvider(SearchProvider):
@@ -22,8 +25,15 @@ class VolcArkProvider(SearchProvider):
             raise ProviderError(self.name, "endpoint not configured")
         if not self.api_key:
             raise ProviderError(self.name, "api_key required")
+        # 火山引擎 API 限制：Query 最大 100 字符
+        truncated_query = query[:100]
+        if len(query) > 100:
+            logger.warning(
+                "Provider %s: query truncated from %d to 100 characters (API limit)",
+                self.name, len(query)
+            )
         body: dict[str, Any] = {
-            "Query": query[:100],
+            "Query": truncated_query,
             "SearchType": "web",
             "Count": min(max(1, max_results), 50),
             "Filter": {

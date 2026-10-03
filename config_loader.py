@@ -79,13 +79,19 @@ def _parse_node_list(
         options = item.get("options", {}) or {}
         if not isinstance(options, dict):
             raise ConfigError(f"node '{name}' options must be an object")
+        try:
+            timeout_seconds = float(item.get("timeout_seconds", 10.0))
+        except (ValueError, TypeError) as exc:
+            raise ConfigError(
+                f"node '{name}' has invalid timeout_seconds: {exc}"
+            ) from exc
         nodes.append(
             NodeConfig(
                 name=name,
                 type=node_type,
                 enabled=bool(item.get("enabled", True)),
                 api_key=str(item.get("api_key", "")),
-                timeout_seconds=float(item.get("timeout_seconds", 10.0)),
+                timeout_seconds=timeout_seconds,
                 options=options,
             )
         )
@@ -102,7 +108,12 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
         raise ConfigError(f"invalid JSON in {path}: {exc}") from exc
 
     failover = raw.get("failover", {}) or {}
-    breaker_seconds = float(failover.get("breaker_seconds", 60))
+    try:
+        breaker_seconds = float(failover.get("breaker_seconds", 60))
+    except (ValueError, TypeError) as exc:
+        raise ConfigError(
+            f"invalid breaker_seconds: {exc}"
+        ) from exc
 
     nodes = _parse_node_list(raw.get("nodes"), SUPPORTED_TYPES, "nodes")
     extract_nodes: list[NodeConfig] = []

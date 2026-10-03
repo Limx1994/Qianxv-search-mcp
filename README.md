@@ -15,7 +15,7 @@
 
 - 源码方式：Python 3.10+，当前构建环境为 Python 3.14.6
 - 依赖：`python -m pip install -r requirements.txt`
-- Windows exe 方式：无需安装 Python，见 [v2.5 安装说明](release/search-mcp-v2.5/安装说明.md)
+- Windows exe 方式：无需安装 Python，见 [v2.6 安装说明](release/search-mcp-v2.6/安装说明.md)
 
 ## 配置
 
@@ -24,7 +24,7 @@
 
 ```powershell
 if (-not (Test-Path .\config.json)) {
-    Copy-Item .\release\search-mcp-v2.5\config.example.json .\config.json
+    Copy-Item .\release\search-mcp-v2.6\config.example.json .\config.json
 }
 ```
 
@@ -116,15 +116,15 @@ HTTP 客户端应选择 Streamable HTTP 传输并填入该 URL。
   "mcpServers": {
     "Qianxv-search-mcp": {
       "type": "stdio",
-      "command": "D:/Qianxv-search-mcp/release/search-mcp-v2.5/search-mcp.exe",
+      "command": "D:/Qianxv-search-mcp/release/search-mcp-v2.6/search-mcp.exe",
       "args": []
     }
   }
 }
 ```
 
-上例为 v2.5 发行版，使用前须按
-[安装说明](release/search-mcp-v2.5/安装说明.md)从无密钥模板创建 `config.json`。
+上例为 v2.6 发行版，使用前须按
+[安装说明](release/search-mcp-v2.6/安装说明.md)从无密钥模板创建 `config.json`。
 请将示例中的绝对路径替换为实际安装路径。无参数时保持 stdio；
 `--transport streamable-http` 和 `--transport both` 用法见安装说明。
 发行版采用目录打包，必须将 `search-mcp.exe` 与旁边的 `_internal/`
@@ -154,7 +154,7 @@ HTTP 客户端应选择 Streamable HTTP 传输并填入该 URL。
 
 ## 工具说明
 
-以下分页说明适用于当前源码和 v2.5 发行版。
+以下分页说明适用于当前源码和 v2.6 发行版。
 历史 v2.0 和 v2.1 仅支持 `extract(url)`，正文超过 8000 字符会截断，
 不提供 `offset`、`snapshot_id` 或续读能力。
 
@@ -174,12 +174,11 @@ HTTP 客户端应选择 Streamable HTTP 传输并填入该 URL。
 
 ## 日志
 
-当前源码和 v2.5 使用 `logs/mcp_search_<PID>.log`，每个进程
+当前源码和 v2.6 使用 `logs/mcp_search_<PID>.log`，每个进程
 写入自己的日志，记录节点调用、失败原因与熔断跳过。每个进程的单个日志文件
 上限为 2,000,000 字节，保留 3 个备份。历史 v2.0 和 v2.1 仍使用
 `logs/mcp_search.log`；这些旧版同时运行多个实例时应使用不同安装目录，
-或升级到 v2.5，避免共享日志轮转冲突。节点日志中的密钥经 `mask_key`
-保留前 8 位并追加 `***`，日志仍属于私有数据，勿上传或分发。
+或升级到 v2.6，避免共享日志轮转冲突。日志仍属于私有数据，勿上传或分发。
 
 ## 开发与验证
 
@@ -235,10 +234,18 @@ providers/         搜索源与抓取源适配器 + 抽象基类
 tests/             单元测试与进程级传输测试
 logs/              运行日志
 search-mcp.spec    Windows 目录发行版构建配置
-release/           v2.0/v2.1 历史版、v2.5 发行版及 ZIP + test_release.py
+release/           v2.0/v2.1 历史版、v2.5/v2.6 发行版及 ZIP + test_release.py
 ```
 
 ## 更新日志
+
+### v2.6（2026-10-03）
+
+- 配置校验：`timeout_seconds` 和 `breaker_seconds` 类型校验，非法值明确报错。
+- 日志增强：日志目录创建失败时回退到系统临时目录；移除 `mask_key` 函数。
+- 节点日志：`_http_client` 未注入时记录 warning；query 超限时记录 warning。
+- Bright Data：完善 MCP 握手流程，`session_id` 缺失时明确报错。
+- 发行包附带配置说明和项目 `LICENSE`，独立解压后可直接阅读。
 
 ### v2.5（2026-10-03）
 

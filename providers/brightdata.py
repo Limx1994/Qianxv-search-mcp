@@ -60,7 +60,15 @@ class BrightDataProvider(SearchProvider):
         return results[:max_results]
 
     async def _call_tool(self, tool: str, arguments: dict[str, Any]) -> str:
-        """完整 MCP 会话：initialize -> tools/call，返回 content 文本。"""
+        """完整 MCP 会话：initialize -> notifications/initialized -> tools/call。
+
+        注意：MCP 协议要求每次工具调用前必须完成 3 次握手：
+        1. initialize: 初始化会话，获取 session_id
+        2. notifications/initialized: 通知服务器客户端已就绪
+        3. tools/call: 执行实际的工具调用
+
+        这是 MCP 协议的强制要求，无法省略。
+        """
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -92,8 +100,9 @@ class BrightDataProvider(SearchProvider):
                     },
                 )
                 session_id = resp.headers.get("mcp-session-id", "")
-                if session_id:
-                    headers["mcp-session-id"] = session_id
+                if not session_id:
+                    raise ProviderError(self.name, "missing mcp-session-id header")
+                headers["mcp-session-id"] = session_id
                 await client.post(
                     self.endpoint,
                     headers=headers,

@@ -7,7 +7,11 @@
 
 from __future__ import annotations
 
+import logging
+
 from .base import ProviderError, SearchProvider, SearchResult
+
+logger = logging.getLogger("mcp_search")
 
 
 class QianfanProvider(SearchProvider):
@@ -16,8 +20,15 @@ class QianfanProvider(SearchProvider):
     ) -> list[SearchResult]:
         if not self.endpoint:
             raise ProviderError(self.name, "endpoint not configured")
+        # 百度千帆 API 限制：query 最大 144 字符
+        truncated_query = query[:144]
+        if len(query) > 144:
+            logger.warning(
+                "Provider %s: query truncated from %d to 144 characters (API limit)",
+                self.name, len(query)
+            )
         body: dict[str, object] = {
-            "messages": [{"role": "user", "content": query[:144]}],
+            "messages": [{"role": "user", "content": truncated_query}],
             "search_source": self.options.get(
                 "search_source", "baidu_search_v2"
             ),

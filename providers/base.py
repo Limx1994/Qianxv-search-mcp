@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
+
+logger = logging.getLogger("mcp_search")
 
 
 @dataclass
@@ -87,11 +90,15 @@ class SearchProvider(ABC):
         headers = self._auth_headers()
         if extra_headers:
             headers.update(extra_headers)
-        client_context = (
-            nullcontext(self._http_client)
-            if self._http_client is not None
-            else httpx.AsyncClient(timeout=self.timeout)
-        )
+        if self._http_client is not None:
+            client_context = nullcontext(self._http_client)
+        else:
+            logger.warning(
+                "Provider %s: _http_client not injected, creating new client per request. "
+                "This may cause performance issues. Ensure lifespan is properly initialized.",
+                self.name
+            )
+            client_context = httpx.AsyncClient(timeout=self.timeout)
         try:
             async with client_context as client:
                 if method == "GET":

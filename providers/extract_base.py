@@ -6,6 +6,7 @@ HTTP 失败判定逻辑与 base.py 的 SearchProvider 保持一致
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -14,6 +15,8 @@ from typing import Any
 import httpx
 
 from .base import ProviderError
+
+logger = logging.getLogger("mcp_search")
 
 
 @dataclass
@@ -61,11 +64,15 @@ class ExtractProvider(ABC):
         self, url: str, body: dict[str, Any]
     ) -> dict[str, Any]:
         """统一 POST 请求：超时/网络/非2xx/解析失败均转 ProviderError。"""
-        client_context = (
-            nullcontext(self._http_client)
-            if self._http_client is not None
-            else httpx.AsyncClient(timeout=self.timeout)
-        )
+        if self._http_client is not None:
+            client_context = nullcontext(self._http_client)
+        else:
+            logger.warning(
+                "Extract provider %s: _http_client not injected, creating new client per request. "
+                "This may cause performance issues. Ensure lifespan is properly initialized.",
+                self.name
+            )
+            client_context = httpx.AsyncClient(timeout=self.timeout)
         try:
             async with client_context as client:
                 resp = await client.post(

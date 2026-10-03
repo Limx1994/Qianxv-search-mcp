@@ -23,11 +23,18 @@ _LOGGER_NAME = "mcp_search"
 
 def setup_logging(level: int = logging.INFO) -> logging.Logger:
     """初始化并返回项目 logger（幂等，可重复调用）。"""
+    global LOG_DIR, LOG_FILE
     logger = logging.getLogger(_LOGGER_NAME)
     if logger.handlers:
         return logger
     logger.setLevel(level)
-    LOG_DIR.mkdir(exist_ok=True)
+    try:
+        LOG_DIR.mkdir(exist_ok=True)
+    except OSError:
+        import tempfile
+        LOG_DIR = Path(tempfile.gettempdir()) / "qianxv-search-mcp-logs"
+        LOG_DIR.mkdir(exist_ok=True)
+        LOG_FILE = LOG_DIR / f"mcp_search_{os.getpid()}.log"
     handler = RotatingFileHandler(
         LOG_FILE,
         maxBytes=2_000_000,
@@ -42,10 +49,3 @@ def setup_logging(level: int = logging.INFO) -> logging.Logger:
     # 抑制 httpx INFO 级请求日志，避免噪音
     logging.getLogger("httpx").setLevel(logging.WARNING)
     return logger
-
-
-def mask_key(api_key: str) -> str:
-    """API Key 脱敏：仅保留前 8 位，禁止完整密钥进入日志。"""
-    if not api_key:
-        return "<empty>"
-    return f"{api_key[:8]}***"
