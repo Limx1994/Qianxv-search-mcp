@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
+import sys
 from pathlib import Path
 
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 
-from config_loader import ConfigError, NodeConfig, load_config
+import config_loader
+from config_loader import AppConfig, ConfigError, NodeConfig, load_config
 from providers import build_extract_providers
 from providers.base import ProviderError
 from providers.extract_base import ExtractProvider, ExtractResult
@@ -122,6 +126,161 @@ def test_extract_unexpected_exception_fails_over():
     router = ExtractRouter([p1, p2], breaker_seconds=60)
     _, hit = run(router.extract("https://example.com/a"))
     assert hit == "good"
+
+
+@pytest.fixture
+def extract_server(monkeypatch):
+    monkeypatch.setattr(
+        config_loader, "load_config", lambda: AppConfig(60, [])
+    )
+    previous = sys.modules.pop("server", None)
+    server = importlib.import_module("server")
+    server._extract_cache.clear()
+    yield server
+    server._extract_cache.clear()
+    sys.modules.pop("server", None)
+    if previous is not None:
+        sys.modules["server"] = previous
+
+
+class PageRouter:
+    def __init__(self, content):
+        self.content = content
+        self.calls = 0
+
+    async def extract(self, url):
+        self.calls += 1
+        return ExtractResult("Page", url, self.content, "mock"), "mock"
+
+
+def _page_parts(output):
+    header, separator, body = output.partition("---\n")
+    assert separator
+    fields = dict(
+        line.split(": ", 1) for line in header.splitlines() if ": " in line
+    )
+    return fields, body
+
+
+@pytest.mark.parametrize("size", [7999, 8000, 8001, 16000, 16001])
+def test_extract_pages_join_exactly(extract_server, monkeypatch, size):
+    content = ("# 标题\n正文😀\n" * 2000)[:size].ljust(size, "中")
+    router = PageRouter(content)
+    monkeypatch.setattr(extract_server, "_extract_router", router)
+    pages = []
+    offset = 0
+    snapshot_id = None
+    while True:
+        output = run(extract_server.extract(
+            "https://example.test/doc", offset, snapshot_id
+        ))
+        fields, body = _page_parts(output)
+        pages.append(body)
+        assert int(fields["offset"]) == offset
+        assert int(fields["end_offset"]) == offset + len(body)
+        assert int(fields["total_chars"]) == size
+        if fields["has_more"] == "false":
+            assert fields["next_offset"] == "null"
+            break
+        snapshot_id = fields["snapshot_id"]
+        assert snapshot_id != "null"
+        offset = int(fields["next_offset"])
+    assert "".join(pages) == content
+    assert router.calls == 1
+    assert (fields["snapshot_id"] == "null") == (size <= 8000)
+
+
+def test_extract_snapshot_stays_stable(extract_server, monkeypatch):
+    router = PageRouter("A" * 8000 + "original")
+    monkeypatch.setattr(extract_server, "_extract_router", router)
+    first, _ = _page_parts(run(extract_server.extract("https://example.test/a")))
+    router.content = "B" * 8000 + "changed"
+    second, body = _page_parts(run(extract_server.extract(
+        "https://example.test/a", 8000, first["snapshot_id"]
+    )))
+    assert body == "original"
+    assert second["has_more"] == "false"
+    assert router.calls == 1
+    _, empty = _page_parts(run(extract_server.extract(
+        "https://example.test/a", 8008, first["snapshot_id"]
+    )))
+    assert empty == ""
+
+
+def test_extract_snapshot_errors(extract_server, monkeypatch):
+    router = PageRouter("x" * 8001)
+    monkeypatch.setattr(extract_server, "_extract_router", router)
+    url = "https://example.test/a"
+    fields, _ = _page_parts(run(extract_server.extract(url)))
+    snapshot_id = fields["snapshot_id"]
+    with pytest.raises(ValueError, match="snapshot_id is required"):
+        run(extract_server.extract(url, 1))
+    with pytest.raises(ValueError, match="offset must"):
+        run(extract_server.extract(url, -1, snapshot_id))
+    with pytest.raises(ValueError, match="URL does not match"):
+        run(extract_server.extract("https://example.test/b", 1, snapshot_id))
+    with pytest.raises(ValueError, match="offset exceeds"):
+        run(extract_server.extract(url, 8002, snapshot_id))
+    with pytest.raises(ValueError, match="snapshot not found"):
+        run(extract_server.extract(url, 1, "missing"))
+    assert router.calls == 1
+
+
+def test_snapshot_expiry_and_eviction(extract_server, monkeypatch):
+    router = PageRouter("x" * 8001)
+    monkeypatch.setattr(extract_server, "_extract_router", router)
+    url = "https://example.test/a"
+    first, _ = _page_parts(run(extract_server.extract(url)))
+    monkeypatch.setattr(extract_server, "_SNAPSHOT_TTL", 0)
+    with pytest.raises(ValueError, match="snapshot not found"):
+        run(extract_server.extract(url, 8000, first["snapshot_id"]))
+    monkeypatch.setattr(extract_server, "_SNAPSHOT_TTL", 600)
+    ids = []
+    for _ in range(33):
+        fields, _ = _page_parts(run(extract_server.extract(url)))
+        ids.append(fields["snapshot_id"])
+    with pytest.raises(ValueError, match="snapshot not found"):
+        run(extract_server.extract(url, 8000, ids[0]))
+    assert _page_parts(run(extract_server.extract(url, 8000, ids[-1])))[1] == "x"
+    assert len(extract_server._extract_cache._items) == 32
+
+
+def test_extract_snapshot_capacity(extract_server, monkeypatch):
+    router = PageRouter("x" * 1_100_000)
+    monkeypatch.setattr(extract_server, "_extract_router", router)
+    url = "https://example.test/a"
+    first, _ = _page_parts(run(extract_server.extract(url)))
+    second, _ = _page_parts(run(extract_server.extract(url)))
+    with pytest.raises(ValueError, match="snapshot not found"):
+        run(extract_server.extract(url, 8000, first["snapshot_id"]))
+    assert _page_parts(run(extract_server.extract(
+        url, 8000, second["snapshot_id"]
+    )))[1] == "x" * 8000
+    router.content = "x" * 2_000_001
+    with pytest.raises(ValueError, match="exceeds snapshot capacity"):
+        run(extract_server.extract(url))
+
+
+def test_extract_tool_schema_and_errors(extract_server, monkeypatch):
+    router = PageRouter("x" * 8001)
+    monkeypatch.setattr(extract_server, "_extract_router", router)
+
+    async def verify():
+        tools = await extract_server.mcp.list_tools()
+        schema = next(t.input_schema for t in tools if t.name == "extract")
+        assert set(schema["properties"]) == {"url", "offset", "snapshot_id"}
+        assert schema["properties"]["offset"]["minimum"] == 0
+        with pytest.raises(ToolError):
+            await extract_server.mcp.call_tool(
+                "extract", {"url": "https://example.test/a", "offset": -1}
+            )
+        with pytest.raises(ToolError):
+            await extract_server.mcp.call_tool(
+                "extract", {"url": "https://example.test/a", "offset": 1}
+            )
+
+    run(verify())
+    assert router.calls == 0
 
 
 def _write_tmp_config(tmp_path: Path, extract_nodes) -> Path:

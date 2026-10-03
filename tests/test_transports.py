@@ -25,6 +25,23 @@ config_loader.load_config = lambda: AppConfig(60, [])
 runpy.run_module('server', run_name='__main__')
 """
 
+LONG_SOURCE = """
+import config_loader
+import providers
+import runpy
+from config_loader import AppConfig
+from providers.extract_base import ExtractResult
+config_loader.load_config = lambda: AppConfig(60, [])
+class FakeExtract:
+    name = 'mock'
+    timeout = 1.0
+    _http_client = None
+    async def extract(self, url):
+        return ExtractResult('Page', url, '文' * 8000 + 'TARGET', 'mock')
+providers.build_extract_providers = lambda cfg: [FakeExtract()]
+runpy.run_module('server', run_name='__main__')
+"""
+
 
 def _free_port() -> int:
     with socket.socket() as sock:
@@ -33,10 +50,10 @@ def _free_port() -> int:
 
 
 async def _start(
-    *args: str, executable: Path | None = None
+    *args: str, executable: Path | None = None, source: str = SOURCE
 ) -> asyncio.subprocess.Process:
     command = (
-        [sys.executable, "-c", SOURCE]
+        [sys.executable, "-c", source]
         if executable is None else [str(executable)]
     )
     return await asyncio.create_subprocess_exec(
@@ -111,6 +128,58 @@ async def _check_http(port: int) -> None:
             assert "所有节点均不可用" in called.content[0].text
 
 
+def _page_cursor(output: str) -> str:
+    assert output.split("---\n", 1)[1] == "文" * 8000
+    assert "has_more: true" in output
+    return output.split("snapshot_id: ", 1)[1].splitlines()[0]
+
+
+async def _check_long_stdio(proc: asyncio.subprocess.Process) -> None:
+    await _rpc(proc, {
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-11-25", "capabilities": {},
+            "clientInfo": {"name": "test", "version": "1"},
+        },
+    })
+    assert proc.stdin is not None
+    proc.stdin.write(b'{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
+    await proc.stdin.drain()
+    url = "https://example.test/long"
+    first = await _rpc(proc, {
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {"name": "extract", "arguments": {"url": url}},
+    })
+    snapshot_id = _page_cursor(first["result"]["content"][0]["text"])
+    second = await _rpc(proc, {
+        "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+        "params": {"name": "extract", "arguments": {
+            "url": url, "offset": 8000, "snapshot_id": snapshot_id,
+        }},
+    })
+    assert second["result"]["content"][0]["text"].endswith("---\nTARGET")
+
+
+async def _check_long_http(port: int) -> None:
+    url = "https://example.test/long"
+    async with streamable_http_client(f"http://127.0.0.1:{port}/mcp") as (
+        read, write,
+    ):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            first = await session.call_tool("extract", {"url": url})
+            snapshot_id = _page_cursor(first.content[0].text)
+    async with streamable_http_client(f"http://127.0.0.1:{port}/mcp") as (
+        read, write,
+    ):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            second = await session.call_tool("extract", {
+                "url": url, "offset": 8000, "snapshot_id": snapshot_id,
+            })
+            assert second.content[0].text.endswith("---\nTARGET")
+
+
 async def _wait_http(port: int) -> None:
     for _ in range(300):
         try:
@@ -162,6 +231,30 @@ def test_both_survives_stdio_disconnect() -> None:
             await asyncio.sleep(0.1)
             assert proc.returncode is None
             await _check_http(port)
+        finally:
+            await _stop(proc)
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("transport", ["stdio", "streamable-http", "both"])
+def test_source_long_extract_paging(transport: str) -> None:
+    async def exercise() -> None:
+        port = _free_port()
+        args = () if transport == "stdio" else (
+            "--transport", transport, "--port", str(port),
+        )
+        proc = await _start(*args, source=LONG_SOURCE)
+        try:
+            if transport != "stdio":
+                await _wait_http(port)
+                await _check_long_http(port)
+            if transport != "streamable-http":
+                await _check_long_stdio(proc)
+            if transport == "stdio":
+                assert proc.stdin is not None
+                proc.stdin.close()
+                assert await asyncio.wait_for(proc.wait(), 10) == 0
         finally:
             await _stop(proc)
 

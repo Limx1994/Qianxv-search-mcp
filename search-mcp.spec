@@ -5,7 +5,7 @@ a = Analysis(
     ['server.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[('LICENSE', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

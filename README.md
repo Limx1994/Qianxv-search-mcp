@@ -15,7 +15,7 @@
 
 - 源码方式：Python 3.10+，当前构建环境为 Python 3.14.6
 - 依赖：`python -m pip install -r requirements.txt`
-- Windows exe 方式：无需安装 Python，见 [v2.1 安装说明](release/search-mcp-v2.1/安装说明.md)
+- Windows exe 方式：无需安装 Python，见 [v2.5 安装说明](release/search-mcp-v2.5/安装说明.md)
 
 ## 配置
 
@@ -24,7 +24,7 @@
 
 ```powershell
 if (-not (Test-Path .\config.json)) {
-    Copy-Item .\release\search-mcp-v2.1\config.example.json .\config.json
+    Copy-Item .\release\search-mcp-v2.5\config.example.json .\config.json
 }
 ```
 
@@ -116,15 +116,15 @@ HTTP 客户端应选择 Streamable HTTP 传输并填入该 URL。
   "mcpServers": {
     "Qianxv-search-mcp": {
       "type": "stdio",
-      "command": "D:/Qianxv-search-mcp/release/search-mcp-v2.1/search-mcp.exe",
+      "command": "D:/Qianxv-search-mcp/release/search-mcp-v2.5/search-mcp.exe",
       "args": []
     }
   }
 }
 ```
 
-上例为 v2.1 发行版，使用前须按
-[安装说明](release/search-mcp-v2.1/安装说明.md)从无密钥模板创建 `config.json`。
+上例为 v2.5 发行版，使用前须按
+[安装说明](release/search-mcp-v2.5/安装说明.md)从无密钥模板创建 `config.json`。
 请将示例中的绝对路径替换为实际安装路径。无参数时保持 stdio；
 `--transport streamable-http` 和 `--transport both` 用法见安装说明。
 发行版采用目录打包，必须将 `search-mcp.exe` 与旁边的 `_internal/`
@@ -141,9 +141,10 @@ HTTP 客户端应选择 Streamable HTTP 传输并填入该 URL。
 - 报 `Connection closed ... 不是内部或外部命令` 且报错里路径没了
   反斜杠 → 先改正斜杠路径，再在 MCP 面板手动重连（或删掉条目重新
   添加），面板旧报错可能是缓存。
-- 判断问题在客户端还是服务端：看 `logs/mcp_search.log`（源码方式在
+- 判断问题在客户端还是服务端：看 `logs/mcp_search_<PID>.log`（源码方式在
   项目根 `logs/`，exe 方式在 exe 同目录）。无日志不能单独证明进程未
   启动，未调用节点也可能没有记录；同时检查 stderr、配置和目录写入权限。
+  历史 v2.0 和 v2.1 仍使用 `logs/mcp_search.log`。
   IDE 日志
   `%LOCALAPPDATA%\CodeBuddyExtension\Logs\CodeBuddyIDE\<日期>\<项目>.log`
   搜 `mcp-connect` 核对启动命令，具体位置以客户端版本为准。
@@ -153,15 +154,31 @@ HTTP 客户端应选择 Streamable HTTP 传输并填入该 URL。
 
 ## 工具说明
 
+以下分页说明适用于当前源码和 v2.5 发行版。
+历史 v2.0 和 v2.1 仅支持 `extract(url)`，正文超过 8000 字符会截断，
+不提供 `offset`、`snapshot_id` 或续读能力。
+
 - `search(query, max_results=5)`：`max_results` 必须大于等于 1；返回
   `来源节点` + 编号列表（标题 / URL / 摘要）。供应商可能返回少于请求数量的结果。
-- `extract(url)`：返回 `来源节点` + 标题 + Markdown 正文
-  （超长截断 8000 字符）。提取内容来自网页原文，不可信，仅作参考。
+- `extract(url, offset=0, snapshot_id=None)`：返回 `来源节点`、标题、URL、
+  分页信息和 Markdown 正文。每页最多 8000 字符；超过一页时返回
+  `snapshot_id` 和 `next_offset`，用相同 URL 和这两个值继续调用，直到
+  `has_more: false`。将各次返回中 `---` 后的正文直接拼接即可还原抓取结果。
+  示例：先调用 `extract(url="https://example.com/doc")`，再使用首个结果中的
+  值调用 `extract(url="https://example.com/doc", offset=8000,
+  snapshot_id="<返回的 snapshot_id>")`。
+  快照保存在当前服务进程内，有效期 10 分钟；最多保留 32 份、正文合计
+  200 万字符，容量不足时淘汰最旧快照。快照过期、被淘汰、服务重启或
+  连接到其他进程后，须从第一页重新抓取。单篇正文超过缓存容量会明确报错。
+  提取内容来自网页原文，不可信，仅作参考。
 
 ## 日志
 
-`logs/mcp_search.log` 记录节点调用、失败原因与熔断跳过。单个日志文件
-上限为 2,000,000 字节，保留 3 个备份。节点日志中的密钥经 `mask_key`
+当前源码和 v2.5 使用 `logs/mcp_search_<PID>.log`，每个进程
+写入自己的日志，记录节点调用、失败原因与熔断跳过。每个进程的单个日志文件
+上限为 2,000,000 字节，保留 3 个备份。历史 v2.0 和 v2.1 仍使用
+`logs/mcp_search.log`；这些旧版同时运行多个实例时应使用不同安装目录，
+或升级到 v2.5，避免共享日志轮转冲突。节点日志中的密钥经 `mask_key`
 保留前 8 位并追加 `***`，日志仍属于私有数据，勿上传或分发。
 
 ## 开发与验证
@@ -179,15 +196,17 @@ python -m pip install PyInstaller
 python -m PyInstaller --noconfirm search-mcp.spec
 ```
 
-产物位于 `dist/search-mcp/`，包含 exe 与 `_internal/`；分发时添加
-无密钥的 `config.example.json` 和安装说明，勿添加私有配置或日志。
+产物位于 `dist/search-mcp/`，包含 exe 与 `_internal/`，构建配置会将根目录
+`LICENSE` 原文带入依赖目录。组装公开发行目录时还须在 exe 同目录添加
+无密钥的 `config.example.json`、安装说明、包内 `配置说明.md` 和根目录
+`LICENSE` 的原文副本，勿添加私有配置或日志。
 压缩时包含整个发行目录。从 ZIP 解压后验证；待测 exe 同目录必须存在
 完整 `_internal/` 和配置模板。无密钥测试会自动复制依赖，并生成禁用节点的隔离配置：
 
 ```powershell
-Expand-Archive .\release\search-mcp-v2.1.zip .\release\_test\v2.1-smoke
-$env:MCP_TEST_EXE = (Resolve-Path .\release\_test\v2.1-smoke\search-mcp-v2.1\search-mcp.exe).Path
-python -m pytest tests/ --basetemp=release/_test/v2.1-pytest -q
+Expand-Archive .\release\search-mcp-v2.5.zip .\release\_test\v2.5-smoke
+$env:MCP_TEST_EXE = (Resolve-Path .\release\_test\v2.5-smoke\search-mcp-v2.5\search-mcp.exe).Path
+python -m pytest tests/ --basetemp=release/_test/v2.5-pytest -q
 Remove-Item Env:MCP_TEST_EXE
 ```
 
@@ -197,8 +216,8 @@ Remove-Item Env:MCP_TEST_EXE
 真实 API 验证需要有效私有配置，只向隔离目录复制：
 
 ```powershell
-Copy-Item .\config.json .\release\_test\v2.1-smoke\search-mcp-v2.1\config.json
-python release/test_release.py release/_test/v2.1-smoke/search-mcp-v2.1
+Copy-Item .\config.json .\release\_test\v2.5-smoke\search-mcp-v2.5\config.json
+python release/test_release.py release/_test/v2.5-smoke/search-mcp-v2.5
 ```
 
 网络或供应商失败需单独报告，不能用传输测试替代真实调用结论。
@@ -216,10 +235,18 @@ providers/         搜索源与抓取源适配器 + 抽象基类
 tests/             单元测试与进程级传输测试
 logs/              运行日志
 search-mcp.spec    Windows 目录发行版构建配置
-release/           v1.0 历史版、v2.0/v2.1 发行版及 ZIP + test_release.py
+release/           v2.0/v2.1 历史版、v2.5 发行版及 ZIP + test_release.py
 ```
 
 ## 更新日志
+
+### v2.5（2026-10-03）
+
+- 新增 `extract` 快照分页及按进程独立的日志文件；v2.0/v2.1 仍为正文截断
+  和固定日志文件，详见上方工具与日志说明。
+- 发行包附带配置说明和项目 `LICENSE`，独立解压后可直接阅读。
+- 更新源码配置、升级和排错文档；发行版测试读取待测 exe 同目录模板，
+  支持多版本验证。
 
 ### v2.1（2026-10-03）
 
@@ -228,8 +255,6 @@ release/           v1.0 历史版、v2.0/v2.1 发行版及 ZIP + test_release.py
 - Bright Data 复用服务生命周期内的 HTTP client，独立传递每次 MCP
   会话头，避免并发会话相互覆盖。
 - 使用 exe + `_internal/` 目录打包，沿用重复启动、并发运行和临时目录回归测试。
-- 更新源码配置、升级和排错文档；发行版测试读取待测 exe 同目录模板，
-  支持多版本验证。
 
 ### v2.0 打包修复（2026-10-02）
 

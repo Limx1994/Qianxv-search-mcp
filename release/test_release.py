@@ -39,6 +39,15 @@ def check(name: str, ok: bool, detail: str = "") -> None:
         _failed.append(name)
 
 
+def _log_state(log_dir: Path) -> dict[Path, tuple[int, int]]:
+    state = {}
+    for log in log_dir.glob("mcp_search*.log"):
+        if log.is_file():
+            stat = log.stat()
+            state[log] = (stat.st_mtime_ns, stat.st_size)
+    return state
+
+
 async def run(exe_dir: Path) -> int:
     exe = exe_dir / "search-mcp.exe"
     check("exe 存在", exe.is_file(), str(exe))
@@ -46,6 +55,8 @@ async def run(exe_dir: Path) -> int:
     if not exe.is_file():
         return 1
 
+    log_dir = exe_dir / "logs"
+    before_logs = _log_state(log_dir)
     server = StdioServerParameters(
         command=str(exe),
         args=[],
@@ -107,8 +118,12 @@ async def run(exe_dir: Path) -> int:
                 check("extract 调用成功", False, repr(exc))
 
     # 5. 日志落地到 exe 旁 logs/
-    log = exe_dir / "logs" / "mcp_search.log"
-    check("日志写入 exe 旁 logs/", log.is_file(), str(log))
+    after_logs = _log_state(log_dir)
+    written = any(
+        size > 0 and before_logs.get(log) != (mtime, size)
+        for log, (mtime, size) in after_logs.items()
+    )
+    check("日志写入 exe 旁 logs/", written, str(log_dir))
 
     print(f"\n共 {_passed + len(_failed)} 项：通过 {_passed}，"
           f"失败 {len(_failed)}")

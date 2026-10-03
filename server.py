@@ -5,9 +5,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+import time
+from collections import OrderedDict
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
+from dataclasses import dataclass
 from typing import Annotated
+from uuid import uuid4
 
 import httpx
 import uvicorn
@@ -18,6 +22,7 @@ from pydantic import Field
 from config_loader import load_config
 from logger import setup_logging
 from providers import build_extract_providers, build_providers
+from providers.extract_base import ExtractResult
 from search_router import (
     AllProvidersFailedError,
     ExtractRouter,
@@ -33,6 +38,67 @@ _extract_router = ExtractRouter(
 _client_lock = asyncio.Lock()
 _client_stack: AsyncExitStack | None = None
 _client_users = 0
+
+
+@dataclass
+class _ExtractSnapshot:
+    url: str
+    result: ExtractResult
+    provider: str
+    created_at: float
+
+
+class _ExtractCache:
+    def __init__(self) -> None:
+        self._items: OrderedDict[str, _ExtractSnapshot] = OrderedDict()
+        self._chars = 0
+
+    def clear(self) -> None:
+        self._items.clear()
+        self._chars = 0
+
+    def _remove(self, snapshot_id: str) -> None:
+        item = self._items.pop(snapshot_id)
+        self._chars -= len(item.result.content)
+
+    def _prune(self) -> None:
+        now = time.monotonic()
+        for snapshot_id, item in list(self._items.items()):
+            if now - item.created_at >= _SNAPSHOT_TTL:
+                self._remove(snapshot_id)
+
+    def put(self, url: str, result: ExtractResult, provider: str) -> str:
+        size = len(result.content)
+        if size > _SNAPSHOT_MAX_CHARS:
+            raise ValueError("extracted content exceeds snapshot capacity")
+        self._prune()
+        while (
+            len(self._items) >= _SNAPSHOT_MAX_ITEMS
+            or self._chars + size > _SNAPSHOT_MAX_CHARS
+        ):
+            self._remove(next(iter(self._items)))
+        snapshot_id = uuid4().hex
+        self._items[snapshot_id] = _ExtractSnapshot(
+            url, result, provider, time.monotonic()
+        )
+        self._chars += size
+        return snapshot_id
+
+    def get(self, snapshot_id: str, url: str) -> _ExtractSnapshot:
+        self._prune()
+        item = self._items.get(snapshot_id)
+        if item is None:
+            raise ValueError("snapshot not found or expired; start a new extract")
+        if item.url != url:
+            raise ValueError("snapshot URL does not match requested URL")
+        return item
+
+
+_EXTRACT_MAX_CHARS = 8000
+_SNAPSHOT_TTL = 600
+_SNAPSHOT_MAX_ITEMS = 32
+_SNAPSHOT_MAX_CHARS = 2_000_000
+_extract_cache = _ExtractCache()
 
 
 @asynccontextmanager
@@ -64,14 +130,12 @@ async def _lifespan(_server: MCPServer) -> AsyncIterator[None]:
                     provider._http_client = None
                 stack = _client_stack
                 _client_stack = None
+                _extract_cache.clear()
                 if stack is not None:
                     await stack.aclose()
 
 
 mcp = MCPServer("Qianxv-search-mcp", lifespan=_lifespan)
-
-_EXTRACT_MAX_CHARS = 8000
-
 
 @mcp.tool()
 async def search(
@@ -102,7 +166,11 @@ async def search(
 
 
 @mcp.tool()
-async def extract(url: str) -> str:
+async def extract(
+    url: str,
+    offset: Annotated[int, Field(ge=0)] = 0,
+    snapshot_id: str | None = None,
+) -> str:
     """网页抓取工具：提取公开网页的标题与正文（Markdown）。
 
     在多个抓取源（AnySearch / Tavily）之间自动故障转移。
@@ -111,20 +179,42 @@ async def extract(url: str) -> str:
 
     Args:
         url: 要抓取内容的公开网页绝对 URL（http/https）。
+        offset: 正文起始字符位置，默认 0；续读时使用 next_offset。
+        snapshot_id: 首次抓取返回的快照标识；续读时必须提供。
     """
-    try:
-        result, provider = await _extract_router.extract(url)
-    except AllProvidersFailedError as exc:
-        return f"抓取失败：所有节点均不可用。{exc}"
+    if offset < 0:
+        raise ValueError("offset must be greater than or equal to 0")
+    if snapshot_id is None:
+        if offset:
+            raise ValueError("snapshot_id is required for a nonzero offset")
+        try:
+            result, provider = await _extract_router.extract(url)
+        except AllProvidersFailedError as exc:
+            return f"抓取失败：所有节点均不可用。{exc}"
+        if len(result.content) > _EXTRACT_MAX_CHARS:
+            snapshot_id = _extract_cache.put(url, result, provider)
+    else:
+        item = _extract_cache.get(snapshot_id, url)
+        result, provider = item.result, item.provider
     content = result.content
-    truncated = ""
-    if len(content) > _EXTRACT_MAX_CHARS:
-        content = content[:_EXTRACT_MAX_CHARS]
-        truncated = "\n\n[内容过长，已截断]"
+    total = len(content)
+    if offset > total:
+        raise ValueError("offset exceeds extracted content length")
+    end = min(offset + _EXTRACT_MAX_CHARS, total)
+    has_more = end < total
     title = result.title or "(无标题)"
+    next_offset = str(end) if has_more else "null"
+    snapshot = snapshot_id or "null"
+    continuation = (
+        "续读: 使用相同 url、snapshot_id 和 next_offset 再次调用 extract。\n"
+        if has_more else ""
+    )
     return (
         f"来源节点: {provider}\n标题: {title}\nURL: {result.url}\n"
-        f"---\n{content}{truncated}"
+        f"offset: {offset}\nend_offset: {end}\ntotal_chars: {total}\n"
+        f"has_more: {str(has_more).lower()}\nnext_offset: {next_offset}\n"
+        f"snapshot_id: {snapshot}\n{continuation}"
+        f"---\n{content[offset:end]}"
     )
 
 

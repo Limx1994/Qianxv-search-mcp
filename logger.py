@@ -1,8 +1,9 @@
-"""统一日志：输出到 logs/mcp_search.log，滚动保留。"""
+"""统一日志：按进程输出到 logs/mcp_search_<PID>.log，滚动保留。"""
 
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -16,7 +17,7 @@ def _app_dir() -> Path:
 
 
 LOG_DIR = _app_dir() / "logs"
-LOG_FILE = LOG_DIR / "mcp_search.log"
+LOG_FILE = LOG_DIR / f"mcp_search_{os.getpid()}.log"
 _LOGGER_NAME = "mcp_search"
 
 
