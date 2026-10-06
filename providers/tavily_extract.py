@@ -39,6 +39,7 @@ class TavilyExtractProvider(ExtractProvider):
         content = str(item.get("raw_content") or "")
         if not content:
             raise ProviderError(self.name, "empty extracted content")
+        # 从正文首个非空一级标题提取标题；没有标题时保留空字符串。
         title = next(
             (line[2:].strip() for line in content.splitlines()
              if line.startswith("# ") and line[2:].strip()),

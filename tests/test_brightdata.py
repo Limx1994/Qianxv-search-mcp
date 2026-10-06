@@ -165,6 +165,7 @@ def test_shared_client_isolates_sessions(monkeypatch):
     sessions = []
 
     async def exercise():
+        # 等两次初始化都到达后再放行，确保测试确实覆盖并发会话交错。
         initialized = asyncio.Event()
 
         async def respond(request):

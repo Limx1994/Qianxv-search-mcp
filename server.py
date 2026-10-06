@@ -62,6 +62,7 @@ class _ExtractCache:
         self._chars -= len(item.result.content)
 
     def _prune(self) -> None:
+        # 使用单调时钟计算存活时间，避免系统时间调整影响快照过期。
         now = time.monotonic()
         for snapshot_id, item in list(self._items.items()):
             if now - item.created_at >= _SNAPSHOT_TTL:
@@ -72,6 +73,7 @@ class _ExtractCache:
         if size > _SNAPSHOT_MAX_CHARS:
             raise ValueError("extracted content exceeds snapshot capacity")
         self._prune()
+        # 同时限制快照数量和正文总字符数；容量不足时按插入顺序淘汰最早快照。
         while (
             len(self._items) >= _SNAPSHOT_MAX_ITEMS
             or self._chars + size > _SNAPSHOT_MAX_CHARS
@@ -105,6 +107,7 @@ _extract_cache = _ExtractCache()
 async def _lifespan(_server: MCPServer) -> AsyncIterator[None]:
     global _client_stack, _client_users
     providers = (*_router.providers, *_extract_router.providers)
+    # both 模式的两个传输共享客户端，只在首个生命周期进入时创建。
     async with _client_lock:
         if _client_users == 0:
             stack = AsyncExitStack()
@@ -114,6 +117,7 @@ async def _lifespan(_server: MCPServer) -> AsyncIterator[None]:
                         httpx.AsyncClient(timeout=provider.timeout)
                     )
             except BaseException:
+                # 初始化中途失败也要撤销注入，并关闭已经创建的客户端。
                 for provider in providers:
                     provider._http_client = None
                 await stack.aclose()
@@ -125,6 +129,7 @@ async def _lifespan(_server: MCPServer) -> AsyncIterator[None]:
     finally:
         async with _client_lock:
             _client_users -= 1
+            # 最后一个使用者退出后才释放连接和快照，避免影响仍运行的传输。
             if _client_users == 0:
                 for provider in providers:
                     provider._http_client = None
@@ -192,11 +197,13 @@ async def extract(
         except AllProvidersFailedError as exc:
             return f"抓取失败：所有节点均不可用。{exc}"
         if len(result.content) > _EXTRACT_MAX_CHARS:
+            # 只有需要续读的正文才占用快照容量；后续分页不再请求上游。
             snapshot_id = _extract_cache.put(url, result, provider)
     else:
         item = _extract_cache.get(snapshot_id, url)
         result, provider = item.result, item.provider
     content = result.content
+    # 偏移和分页长度均按 Python 字符计数，而不是 UTF-8 字节数。
     total = len(content)
     if offset > total:
         raise ValueError("offset exceeds extracted content length")
@@ -249,11 +256,13 @@ async def _run_both(port: int) -> None:
             (http_task, stdio_task), return_when=asyncio.FIRST_COMPLETED
         )
         if stdio_task in done:
+            # stdio 正常断开后继续等待 HTTP；stdio 异常则进入统一清理流程。
             await stdio_task
             await http_task
         else:
             await http_task
     finally:
+        # 任一传输异常或 HTTP 退出时，取消剩余任务并等待其资源清理完成。
         for task in (stdio_task, http_task):
             if not task.done():
                 task.cancel()

@@ -70,11 +70,13 @@ class BrightDataProvider(SearchProvider):
         这是 MCP 协议的强制要求，无法省略。
         """
         headers = {
+            # 会话标识仅写入本次调用的请求头，避免共享客户端的并发调用串会话。
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
         }
         client_context = (
+            # 复用连接池不等于复用 MCP 会话；临时客户端则在本次调用结束时关闭。
             nullcontext(self._http_client)
             if self._http_client is not None
             else httpx.AsyncClient(timeout=self.timeout)
@@ -155,6 +157,7 @@ class BrightDataProvider(SearchProvider):
                 try:
                     data = json.loads(line[5:].strip())
                 except ValueError:
+                    # 非 JSON 的 data 行不参与解析，最终保留最后一个字典载荷。
                     continue
                 if isinstance(data, dict):
                     payload = data

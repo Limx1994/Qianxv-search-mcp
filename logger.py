@@ -17,6 +17,7 @@ def _app_dir() -> Path:
 
 
 LOG_DIR = _app_dir() / "logs"
+# 各进程独立轮转，避免并发运行时争用同一日志文件。
 LOG_FILE = LOG_DIR / f"mcp_search_{os.getpid()}.log"
 _LOGGER_NAME = "mcp_search"
 
@@ -26,11 +27,13 @@ def setup_logging(level: int = logging.INFO) -> logging.Logger:
     global LOG_DIR, LOG_FILE
     logger = logging.getLogger(_LOGGER_NAME)
     if logger.handlers:
+        # 多模块重复初始化时复用已有 handler，避免同一条日志被重复写入。
         return logger
     logger.setLevel(level)
     try:
         LOG_DIR.mkdir(exist_ok=True)
     except OSError:
+        # 应用目录不可写时使用临时目录，日志文件仍按进程隔离。
         import tempfile
         LOG_DIR = Path(tempfile.gettempdir()) / "qianxv-search-mcp-logs"
         LOG_DIR.mkdir(exist_ok=True)

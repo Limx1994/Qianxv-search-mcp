@@ -39,6 +39,7 @@ class ZhihuProvider(SearchProvider):
         data_obj = data.get("Data")
         items = data_obj.get("Items") if isinstance(data_obj, dict) else None
         results_raw = items or []
+        # 去除摘要中的搜索高亮标签后再截断，避免将 em 标记展示给调用方。
         results = [
             SearchResult(
                 title=str(item.get("Title", "")),

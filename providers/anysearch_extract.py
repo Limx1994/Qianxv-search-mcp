@@ -29,6 +29,7 @@ class AnySearchExtractProvider(ExtractProvider):
             )
         payload = data.get("data") or {}
         content = str(payload.get("content") or "")
+        # 空正文作为节点失败上报，由抓取路由继续尝试其他节点。
         if not content:
             raise ProviderError(self.name, "empty extracted content")
         return ExtractResult(

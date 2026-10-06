@@ -3,6 +3,7 @@
 config.json
 release/search-mcp-v1.0/config.json
 release/search-mcp-v1.0.zip
+release/*/config.json
 release/*/logs/
 release/_test/
 logs/

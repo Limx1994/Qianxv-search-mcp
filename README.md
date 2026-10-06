@@ -15,7 +15,7 @@
 
 - 源码方式：Python 3.10+，当前构建环境为 Python 3.14.6
 - 依赖：`python -m pip install -r requirements.txt`
-- Windows exe 方式：无需安装 Python，见 [v2.6 安装说明](release/search-mcp-v2.6/安装说明.md)
+- Windows exe 方式：无需安装 Python，见 [v2.7 安装说明](release/search-mcp-v2.7/安装说明.md)
 
 ## 配置
 
@@ -24,7 +24,7 @@
 
 ```powershell
 if (-not (Test-Path .\config.json)) {
-    Copy-Item .\release\search-mcp-v2.6\config.example.json .\config.json
+    Copy-Item .\release\search-mcp-v2.7\config.example.json .\config.json
 }
 ```
 
@@ -34,7 +34,7 @@ if (-not (Test-Path .\config.json)) {
 所有节点由 `config.json` 配置：
 
 - `nodes` 数组顺序 = 搜索故障转移顺序；`extract_nodes` 数组顺序 =
-  抓取故障转移顺序（可省略；提供时须为非空数组）
+  抓取故障转移顺序（可省略；提供时须为非空数组，不能为 null）
 - 每节点：`name` / `type`（搜索：anysearch|qianfan|volc_ark|tavily|
   brightdata|zhihu；抓取：anysearch_extract|tavily_extract）/
   `enabled`（默认 true，false 则跳过）/ `api_key` / `timeout_seconds`（默认 10 秒）/ `options`（端点等）
@@ -116,15 +116,15 @@ HTTP 客户端应选择 Streamable HTTP 传输并填入该 URL。
   "mcpServers": {
     "Qianxv-search-mcp": {
       "type": "stdio",
-      "command": "D:/Qianxv-search-mcp/release/search-mcp-v2.6/search-mcp.exe",
+      "command": "D:/Qianxv-search-mcp/release/search-mcp-v2.7/search-mcp.exe",
       "args": []
     }
   }
 }
 ```
 
-上例为 v2.6 发行版，使用前须按
-[安装说明](release/search-mcp-v2.6/安装说明.md)从无密钥模板创建 `config.json`。
+上例为 v2.7 发行版，使用前须按
+[安装说明](release/search-mcp-v2.7/安装说明.md)从无密钥模板创建 `config.json`。
 请将示例中的绝对路径替换为实际安装路径。无参数时保持 stdio；
 `--transport streamable-http` 和 `--transport both` 用法见安装说明。
 发行版采用目录打包，必须将 `search-mcp.exe` 与旁边的 `_internal/`
@@ -154,7 +154,7 @@ HTTP 客户端应选择 Streamable HTTP 传输并填入该 URL。
 
 ## 工具说明
 
-以下分页说明适用于当前源码和 v2.6 发行版。
+以下分页说明适用于当前源码和 v2.7 发行版。
 历史 v2.0 和 v2.1 仅支持 `extract(url)`，正文超过 8000 字符会截断，
 不提供 `offset`、`snapshot_id` 或续读能力。
 
@@ -174,11 +174,12 @@ HTTP 客户端应选择 Streamable HTTP 传输并填入该 URL。
 
 ## 日志
 
-当前源码和 v2.6 使用 `logs/mcp_search_<PID>.log`，每个进程
+当前源码和 v2.7 使用 `logs/mcp_search_<PID>.log`，每个进程
 写入自己的日志，记录节点调用、失败原因与熔断跳过。每个进程的单个日志文件
 上限为 2,000,000 字节，保留 3 个备份。历史 v2.0 和 v2.1 仍使用
 `logs/mcp_search.log`；这些旧版同时运行多个实例时应使用不同安装目录，
-或升级到 v2.6，避免共享日志轮转冲突。日志仍属于私有数据，勿上传或分发。
+或升级到 v2.7，避免共享日志轮转冲突。日志目录创建失败时回退到系统临时目录下的 `qianxv-search-mcp-logs/`；
+该回退不涵盖日志文件打开失败。日志仍属于私有数据，勿上传或分发。
 
 ## 开发与验证
 
@@ -192,8 +193,19 @@ Windows 发行版构建（需另装 PyInstaller；当前构建环境为 6.22.3�
 
 ```powershell
 python -m pip install PyInstaller
-python -m PyInstaller --noconfirm search-mcp.spec
+.\build.ps1
 ```
+
+`build.ps1` 可从任意工作目录运行，使用仓库的 `search-mcp.spec`，并检查
+`dist\search-mcp\search-mcp.exe` 与 `_internal\` 是否生成。清理构建产物和
+Python/pytest/ruff 缓存时可先预览再执行：
+
+```powershell
+.\clean.ps1 -WhatIf
+.\clean.ps1
+```
+
+清理脚本保留日志、`release\_test\`、历史发行包及私有配置。
 
 产物位于 `dist/search-mcp/`，包含 exe 与 `_internal/`，构建配置会将根目录
 `LICENSE` 原文带入依赖目录。组装公开发行目录时还须在 exe 同目录添加
@@ -203,9 +215,9 @@ python -m PyInstaller --noconfirm search-mcp.spec
 完整 `_internal/` 和配置模板。无密钥测试会自动复制依赖，并生成禁用节点的隔离配置：
 
 ```powershell
-Expand-Archive .\release\search-mcp-v2.5.zip .\release\_test\v2.5-smoke
-$env:MCP_TEST_EXE = (Resolve-Path .\release\_test\v2.5-smoke\search-mcp-v2.5\search-mcp.exe).Path
-python -m pytest tests/ --basetemp=release/_test/v2.5-pytest -q
+Expand-Archive .\release\search-mcp-v2.7.zip .\release\_test\v2.7-smoke
+$env:MCP_TEST_EXE = (Resolve-Path .\release\_test\v2.7-smoke\search-mcp-v2.7\search-mcp.exe).Path
+python -m pytest tests/ --basetemp=release/_test/v2.7-pytest -q
 Remove-Item Env:MCP_TEST_EXE
 ```
 
@@ -215,8 +227,8 @@ Remove-Item Env:MCP_TEST_EXE
 真实 API 验证需要有效私有配置，只向隔离目录复制：
 
 ```powershell
-Copy-Item .\config.json .\release\_test\v2.5-smoke\search-mcp-v2.5\config.json
-python release/test_release.py release/_test/v2.5-smoke/search-mcp-v2.5
+Copy-Item .\config.json .\release\_test\v2.7-smoke\search-mcp-v2.7\config.json
+python release/test_release.py release/_test/v2.7-smoke/search-mcp-v2.7
 ```
 
 网络或供应商失败需单独报告，不能用传输测试替代真实调用结论。
@@ -225,7 +237,7 @@ python release/test_release.py release/_test/v2.5-smoke/search-mcp-v2.5
 ## 目录结构
 
 ```
-server.py          MCP 入口（stdio / Streamable HTTP）+ search/extract 工具
+server.py          MCP 入口（stdio / Streamable HTTP / both）+ search/extract 工具
 config.json        节点配置（顺序/开关/密钥/超时/端点，不提交版本库）
 config_loader.py   配置加载与校验
 search_router.py   故障转移编排 + 短时熔断（搜索/抓取共用基类）
@@ -233,11 +245,21 @@ logger.py          文件日志 + 密钥脱敏
 providers/         搜索源与抓取源适配器 + 抽象基类
 tests/             单元测试与进程级传输测试
 logs/              运行日志
+build.ps1          构建并检查目录发行版产物
+clean.ps1          清理构建与缓存，支持 -WhatIf
 search-mcp.spec    Windows 目录发行版构建配置
-release/           v2.0/v2.1 历史版、v2.5/v2.6 发行版及 ZIP + test_release.py
+release/           v2.5/v2.6 历史发行版、v2.7 发行版及 ZIP + test_release.py
 ```
 
 ## 更新日志
+
+### v2.7（2026-10-07）
+
+- 配置校验：`extract_nodes` 可省略；显式提供 `null` 或空数组时启动报错。
+- 新增 `build.ps1` 构建检查与 `clean.ps1` 清理预览，保留私有配置、日志和发行包。
+- 发行版测试复用依赖副本，通过硬链接隔离用例，减少重复复制；需在同一支持硬链接的文件系统运行。
+- 更新当前版本接入、构建、验证及日志回退说明，保留历史发行版。
+
 
 ### v2.6（2026-10-03）
 

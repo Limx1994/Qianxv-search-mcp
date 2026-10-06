@@ -36,6 +36,7 @@ EXTRACT_REGISTRY: dict[str, type[ExtractProvider]] = {
 def build_providers(cfg: AppConfig) -> list[SearchProvider]:
     """按配置顺序构建启用的 provider（顺序即故障转移顺序）。"""
     providers: list[SearchProvider] = []
+    # 按配置数组遍历而非注册表遍历，过滤禁用节点后仍保留故障转移优先级。
     for node in cfg.nodes:
         if not node.enabled:
             continue

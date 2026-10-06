@@ -65,8 +65,10 @@ class ExtractProvider(ABC):
     ) -> dict[str, Any]:
         """统一 POST 请求：超时/网络/非2xx/解析失败均转 ProviderError。"""
         if self._http_client is not None:
+            # 共享客户端的关闭责任属于服务生命周期，不能在单次抓取后关闭。
             client_context = nullcontext(self._http_client)
         else:
+            # 未注入客户端时使用临时连接，成功或异常退出都会由上下文关闭。
             logger.warning(
                 "Extract provider %s: _http_client not injected, creating new client per request. "
                 "This may cause performance issues. Ensure lifespan is properly initialized.",

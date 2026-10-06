@@ -26,6 +26,7 @@ class AnySearchProvider(SearchProvider):
                 body[key] = self.options[key]
 
         data = await self._post_json(self.endpoint, body)
+        # HTTP 请求成功仍可能携带业务错误，需要交给路由继续故障转移。
         if data.get("code", 0) != 0:
             raise ProviderError(
                 self.name,
@@ -33,6 +34,7 @@ class AnySearchProvider(SearchProvider):
                 f"message={str(data.get('message'))[:200]}",
             )
         results_raw = (data.get("data") or {}).get("results") or []
+        # 兼容摘要字段差异，并限制单条摘要长度；结果总数在转换后裁剪。
         results = [
             SearchResult(
                 title=str(item.get("title", "")),

@@ -16,6 +16,7 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
+# 依赖留给 COLLECT 组装，生成 exe 与 _internal 并列的目录发行版。
 exe = EXE(
     pyz,
     a.scripts,
@@ -28,6 +29,7 @@ exe = EXE(
     upx=True,
     upx_exclude=[],
     contents_directory='_internal',
+    # stdio MCP 需要标准输入输出，保留控制台模式。
     console=True,
     disable_windowed_traceback=False,
     argv_emulation=False,

@@ -54,6 +54,7 @@ class VolcArkProvider(SearchProvider):
         if data.get("Result") is None:
             raise ProviderError(self.name, "Result is null in response")
         web_results = (data.get("Result") or {}).get("WebResults") or []
+        # 仅保留有 URL 的网页结果，摘要优先取 Snippet，缺失时使用 Summary。
         results = [
             SearchResult(
                 title=str(item.get("Title", "")),

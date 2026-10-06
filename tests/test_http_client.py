@@ -55,6 +55,7 @@ def test_server_reuses_and_closes_http_client(monkeypatch):
         async with server._lifespan(server.mcp):
             assert search_provider._http_client is search_client
             assert extract_provider._http_client is extract_client
+            # 嵌套生命周期模拟 both 模式，内层退出后外层仍应能复用客户端。
             async with server._lifespan(server.mcp):
                 assert await search_provider.search("query", 1)
                 assert await extract_provider.extract("https://example.test/a")

@@ -91,8 +91,10 @@ class SearchProvider(ABC):
         if extra_headers:
             headers.update(extra_headers)
         if self._http_client is not None:
+            # 注入的共享客户端由服务生命周期关闭，请求结束时只退出空上下文。
             client_context = nullcontext(self._http_client)
         else:
+            # 单独调用适配器时创建临时客户端，由下方 async with 负责关闭。
             logger.warning(
                 "Provider %s: _http_client not injected, creating new client per request. "
                 "This may cause performance issues. Ensure lifespan is properly initialized.",

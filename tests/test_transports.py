@@ -17,6 +17,7 @@ from mcp.client.streamable_http import streamable_http_client
 
 
 ROOT = Path(__file__).resolve().parents[1]
+# 子进程启动前替换配置加载，避免读取私有配置或调用外部服务。
 SOURCE = """
 import config_loader
 import runpy
@@ -68,6 +69,7 @@ async def _start(
 async def _stop(proc: asyncio.subprocess.Process) -> None:
     if proc.returncode is None:
         if sys.platform == "win32":
+            # Windows 下同时终止进程树，避免发行版启动器留下子进程。
             killer = await asyncio.create_subprocess_exec(
                 "taskkill", "/PID", str(proc.pid), "/T", "/F",
                 stdout=asyncio.subprocess.DEVNULL,
@@ -88,6 +90,7 @@ async def _rpc(proc: asyncio.subprocess.Process, message: dict) -> dict:
         line = await asyncio.wait_for(proc.stdout.readline(), 15)
         assert line, "stdio closed before response"
         response = json.loads(line)
+        # stdio 可能穿插通知，只接收与本次请求 id 对应的响应。
         if response.get("id") == message["id"]:
             return response
 
@@ -162,6 +165,7 @@ async def _check_long_stdio(proc: asyncio.subprocess.Process) -> None:
 
 async def _check_long_http(port: int) -> None:
     url = "https://example.test/long"
+    # 首次抓取与续读使用不同 HTTP 会话，验证快照由服务持有而非绑定客户端。
     async with streamable_http_client(f"http://127.0.0.1:{port}/mcp") as (
         read, write,
     ):
@@ -280,31 +284,48 @@ def test_http_port_conflict(transport: str) -> None:
     asyncio.run(exercise())
 
 
-@pytest.fixture
-def release_exe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+@pytest.fixture(scope="session")
+def release_bin(tmp_path_factory: pytest.TempPathFactory) -> Path:
     value = os.getenv("MCP_TEST_EXE")
     if not value:
+        # 没有待测发行版时明确跳过，源码测试通过不能代替 exe 验证。
         pytest.skip("exe path not set")
     source = Path(value).resolve()
     assert source.is_file()
-    app = tmp_path / "app"
-    app.mkdir()
+    app = tmp_path_factory.mktemp("release_bin")
     exe = app / source.name
     shutil.copy2(source, exe)
     internal = source.parent / "_internal"
     if internal.is_dir():
         shutil.copytree(internal, app / "_internal")
+    shutil.copy2(source.parent / "config.example.json", app)
+    return exe
+
+
+@pytest.fixture
+def release_exe(
+    release_bin: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    app = tmp_path / "app"
+    app.mkdir()
+    exe = app / release_bin.name
+    os.link(release_bin, exe)
+    internal = release_bin.parent / "_internal"
+    if internal.is_dir():
+        shutil.copytree(internal, app / "_internal", copy_function=os.link)
     config = json.loads(
-        (source.parent / "config.example.json").read_text(
+        (release_bin.parent / "config.example.json").read_text(
             encoding="utf-8"
         )
     )
     for node in (*config["nodes"], *config.get("extract_nodes", [])):
+        # 使用无密钥、全禁用节点的隔离配置，仅验证传输和进程行为。
         node["enabled"] = False
         node["api_key"] = ""
     (app / "config.json").write_text(json.dumps(config), encoding="utf-8")
     temp = tmp_path / "temp"
     temp.mkdir()
+    # 将临时解包目录隔离到本用例中，便于检查 _MEI 残留。
     monkeypatch.setenv("TEMP", str(temp))
     monkeypatch.setenv("TMP", str(temp))
     return exe

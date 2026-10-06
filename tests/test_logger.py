@@ -59,6 +59,7 @@ def test_concurrent_log_rotation(tmp_path: Path) -> None:
                 proc.stdout.readline() for proc in processes
             )), 10)
             assert all(line.strip() == b"ready" for line in ready)
+            # 两个进程都就绪后同时写入，确保覆盖并发日志轮转。
             for proc in processes:
                 proc.stdin.write(b"start\n")
                 await proc.stdin.drain()
@@ -89,6 +90,7 @@ def test_concurrent_log_rotation(tmp_path: Path) -> None:
         assert (tmp_path / f"mcp_search_{pid}.log.1").is_file()
         assert sum(path.stat().st_size for path in files) > 2_000_000
         records = Counter(
+            # 按进程和序号核对全部记录，检测轮转造成的丢失、重复或串写。
             (int(owner), int(index))
             for path in files
             for owner, index in re.findall(

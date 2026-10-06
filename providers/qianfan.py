@@ -40,6 +40,7 @@ class QianfanProvider(SearchProvider):
             raise ProviderError(self.name, "api_key required")
 
         data = await self._post_json(self.endpoint, body)
+        # 两种业务错误字段都需检查，不能仅依赖 HTTP 状态码判断成功。
         if data.get("code") or data.get("error_code"):
             raise ProviderError(
                 self.name,

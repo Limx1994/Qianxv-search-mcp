@@ -117,7 +117,8 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
 
     nodes = _parse_node_list(raw.get("nodes"), SUPPORTED_TYPES, "nodes")
     extract_nodes: list[NodeConfig] = []
-    if raw.get("extract_nodes") is not None:
+    # 兼容未配置抓取节点的旧配置；提供字段时执行非空数组校验。
+    if "extract_nodes" in raw:
         extract_nodes = _parse_node_list(
             raw.get("extract_nodes"),
             SUPPORTED_EXTRACT_TYPES,

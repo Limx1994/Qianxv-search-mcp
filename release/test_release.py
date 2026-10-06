@@ -56,6 +56,7 @@ async def run(exe_dir: Path) -> int:
         return 1
 
     log_dir = exe_dir / "logs"
+    # 保存运行前的文件状态，防止把历史日志误判为本次写入成功。
     before_logs = _log_state(log_dir)
     server = StdioServerParameters(
         command=str(exe),
@@ -120,6 +121,7 @@ async def run(exe_dir: Path) -> int:
     # 5. 日志落地到 exe 旁 logs/
     after_logs = _log_state(log_dir)
     written = any(
+        # 新增或发生时间／大小变化的非空日志才算本次运行的落地证据。
         size > 0 and before_logs.get(log) != (mtime, size)
         for log, (mtime, size) in after_logs.items()
     )

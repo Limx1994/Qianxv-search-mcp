@@ -31,6 +31,7 @@ class _FailoverRouter:
     ) -> None:
         self.providers: list = list(providers)
         self.breaker_seconds = max(0.0, float(breaker_seconds))
+        # 节点名是熔断状态的键；配置校验保证同一节点列表中的名称唯一。
         self._fail_at: dict[str, float] = {}
 
     def _breaker_open(self, name: str) -> bool:
@@ -38,6 +39,7 @@ class _FailoverRouter:
         if fail_at is None:
             return False
         if time.monotonic() - fail_at >= self.breaker_seconds:
+            # 冷却期结束后恢复尝试，不额外发起探测请求。
             self._fail_at.pop(name, None)
             return False
         return True
@@ -125,6 +127,7 @@ class SearchRouter(_FailoverRouter):
                 continue
             elapsed = time.monotonic() - start
             if not results:
+                # 搜索空结果也触发熔断和故障转移，避免将不可用节点视为成功。
                 self._record_empty(provider, errors)
                 continue
             self._fail_at.pop(provider.name, None)

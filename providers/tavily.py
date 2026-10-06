@@ -25,6 +25,7 @@ class TavilyProvider(SearchProvider):
         }
 
         data = await self._post_json(self.endpoint, body)
+        # 响应中的 detail 按业务失败处理，确保路由能切换到下一节点。
         if data.get("detail"):
             raise ProviderError(
                 self.name, f"biz error: {str(data['detail'])[:200]}"

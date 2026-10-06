@@ -134,6 +134,7 @@ def extract_server(monkeypatch):
         config_loader, "load_config", lambda: AppConfig(60, [])
     )
     previous = sys.modules.pop("server", None)
+    # 重新导入以应用 mock 配置，结束后恢复原模块，避免污染其他用例。
     server = importlib.import_module("server")
     server._extract_cache.clear()
     yield server
@@ -164,6 +165,7 @@ def _page_parts(output):
 
 @pytest.mark.parametrize("size", [7999, 8000, 8001, 16000, 16001])
 def test_extract_pages_join_exactly(extract_server, monkeypatch, size):
+    # 覆盖分页临界值，并混入中文和 emoji，验证偏移按字符计算且拼接无损。
     content = ("# 标题\n正文😀\n" * 2000)[:size].ljust(size, "中")
     router = PageRouter(content)
     monkeypatch.setattr(extract_server, "_extract_router", router)
@@ -340,6 +342,14 @@ def test_extract_config_rejects_bad_type(tmp_path):
         }
     ]
     with pytest.raises(ConfigError):
+        load_config(_write_tmp_config(tmp_path, nodes))
+
+
+@pytest.mark.parametrize("nodes", [None, []], ids=["null", "empty"])
+def test_extract_config_rejects_null_empty(tmp_path, nodes):
+    with pytest.raises(
+        ConfigError, match="'extract_nodes' must be a non-empty array"
+    ):
         load_config(_write_tmp_config(tmp_path, nodes))
 
 
