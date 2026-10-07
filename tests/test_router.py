@@ -26,6 +26,7 @@ class FakeProvider(SearchProvider):
         self.results = results or []
         self.error = error
         self.calls = 0
+        self.timeout = 10.0
 
     async def search(self, query: str, max_results: int):
         self.calls += 1

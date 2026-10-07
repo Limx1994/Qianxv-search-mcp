@@ -28,6 +28,7 @@ class FakeExtractProvider(ExtractProvider):
         self.result = result
         self.error = error
         self.calls = 0
+        self.timeout = 10.0
 
     async def extract(self, url: str) -> ExtractResult:
         self.calls += 1

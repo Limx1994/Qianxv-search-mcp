@@ -9,13 +9,15 @@
 
 实际启用的节点及故障转移顺序由 `config.json` 决定。
 某节点失败（超时 / HTTP 错误 / 鉴权失败 / 配额耗尽 / 空结果）时
-自动切换下一个，全部失败才返回错误。
+自动切换下一个。全部节点真实失败或总预算耗尽才返回 MCP 工具错误；
+尝试结束后没有有效结果、但至少一个节点正常响应时，返回“未找到相关结果”。
+搜索空结果不触发熔断。
 
 ## 运行环境
 
 - 源码方式：Python 3.10+，当前构建环境为 Python 3.14.6
 - 依赖：`python -m pip install -r requirements.txt`
-- Windows exe 方式：无需安装 Python，见 [v2.7 安装说明](release/search-mcp-v2.7/安装说明.md)
+- Windows exe 方式：无需安装 Python，见 [v2.9 安装说明](release/search-mcp-v2.9/安装说明.md)
 
 ## 配置
 
@@ -24,7 +26,7 @@
 
 ```powershell
 if (-not (Test-Path .\config.json)) {
-    Copy-Item .\release\search-mcp-v2.7\config.example.json .\config.json
+    Copy-Item .\release\search-mcp-v2.9\config.example.json .\config.json
 }
 ```
 
@@ -41,7 +43,14 @@ if (-not (Test-Path .\config.json)) {
 - `name` 在同一数组内必须唯一；`nodes` 必须为非空数组。
   全部节点禁用时服务仍可启动，但工具调用会返回所有节点不可用
 - `failover.breaker_seconds`：节点失败后的熔断窗口（默认 60 秒，
-  窗口内跳过该节点，避免每次都先撞已知坏节点）
+  窗口内跳过该节点，避免每次都先撞已知坏节点）；必须为有限非负数，`0` 禁用熔断。
+  冷却结束后只允许一个恢复探测，其余并发请求走备用节点。
+- `timeout_seconds` 必须为有限正数，同时限制 HTTP 网络阶段和整个节点执行过程；
+  `enabled` 必须为 JSON 布尔值。根配置与 `failover` 须为对象。
+- `failover.search_timeout_seconds` / `failover.extract_timeout_seconds`：可选的整次调用
+  总预算，必须为有限正数；省略时为对应启用节点的 `timeout_seconds` 合计。
+  模板省略这两个字段，新增节点会自动计入默认预算。实际节点上限取节点超时与剩余
+  总预算的较小值，预算耗尽后停止尝试；客户端取消不触发节点熔断。
 
 > 注意：`config.json` 含密钥，已加入 `.gitignore`，勿提交版本库。
 > 火山节点走「豆包搜索 Custom 版」（`POST
@@ -116,15 +125,15 @@ HTTP 客户端应选择 Streamable HTTP 传输并填入该 URL。
   "mcpServers": {
     "Qianxv-search-mcp": {
       "type": "stdio",
-      "command": "D:/Qianxv-search-mcp/release/search-mcp-v2.7/search-mcp.exe",
+      "command": "D:/Qianxv-search-mcp/release/search-mcp-v2.9/search-mcp.exe",
       "args": []
     }
   }
 }
 ```
 
-上例为 v2.7 发行版，使用前须按
-[安装说明](release/search-mcp-v2.7/安装说明.md)从无密钥模板创建 `config.json`。
+上例为 v2.9 发行版，使用前须按
+[安装说明](release/search-mcp-v2.9/安装说明.md)从无密钥模板创建 `config.json`。
 请将示例中的绝对路径替换为实际安装路径。无参数时保持 stdio；
 `--transport streamable-http` 和 `--transport both` 用法见安装说明。
 发行版采用目录打包，必须将 `search-mcp.exe` 与旁边的 `_internal/`
@@ -154,14 +163,14 @@ HTTP 客户端应选择 Streamable HTTP 传输并填入该 URL。
 
 ## 工具说明
 
-以下分页说明适用于当前源码和 v2.7 发行版。
+以下分页说明适用于当前源码和 v2.9 发行版。
 历史 v2.0 和 v2.1 仅支持 `extract(url)`，正文超过 8000 字符会截断，
 不提供 `offset`、`snapshot_id` 或续读能力。
 
-- `search(query, max_results=5)`：`max_results` 必须大于等于 1；返回
+- `search(query, max_results=5)`：query 不得为空或纯空白；`max_results` 必须大于等于 1；返回
   `来源节点` + 编号列表（标题 / URL / 摘要）。供应商可能返回少于请求数量的结果。
 - `extract(url, offset=0, snapshot_id=None)`：返回 `来源节点`、标题、URL、
-  分页信息和 Markdown 正文。每页最多 8000 字符；超过一页时返回
+  分页信息和 Markdown 正文。URL 必须是有效的绝对 HTTP/HTTPS URL，非法输入不调用节点。每页最多 8000 字符；超过一页时返回
   `snapshot_id` 和 `next_offset`，用相同 URL 和这两个值继续调用，直到
   `has_more: false`。将各次返回中 `---` 后的正文直接拼接即可还原抓取结果。
   示例：先调用 `extract(url="https://example.com/doc")`，再使用首个结果中的
@@ -174,11 +183,11 @@ HTTP 客户端应选择 Streamable HTTP 传输并填入该 URL。
 
 ## 日志
 
-当前源码和 v2.7 使用 `logs/mcp_search_<PID>.log`，每个进程
-写入自己的日志，记录节点调用、失败原因与熔断跳过。每个进程的单个日志文件
+当前源码和 v2.9 使用 `logs/mcp_search_<PID>.log`，每个进程
+写入自己的日志，记录节点调用、失败原因与熔断跳过；v2.8 起还记录节点成功/失败耗时、整次调用耗时、尝试与跳过数量和原因，空结果单独记录。每个进程的单个日志文件
 上限为 2,000,000 字节，保留 3 个备份。历史 v2.0 和 v2.1 仍使用
 `logs/mcp_search.log`；这些旧版同时运行多个实例时应使用不同安装目录，
-或升级到 v2.7，避免共享日志轮转冲突。日志目录创建失败时回退到系统临时目录下的 `qianxv-search-mcp-logs/`；
+或升级到 v2.9，避免共享日志轮转冲突。日志目录创建失败时回退到系统临时目录下的 `qianxv-search-mcp-logs/`；
 该回退不涵盖日志文件打开失败。日志仍属于私有数据，勿上传或分发。
 
 ## 开发与验证
@@ -215,9 +224,9 @@ Python/pytest/ruff 缓存时可先预览再执行：
 完整 `_internal/` 和配置模板。无密钥测试会自动复制依赖，并生成禁用节点的隔离配置：
 
 ```powershell
-Expand-Archive .\release\search-mcp-v2.7.zip .\release\_test\v2.7-smoke
-$env:MCP_TEST_EXE = (Resolve-Path .\release\_test\v2.7-smoke\search-mcp-v2.7\search-mcp.exe).Path
-python -m pytest tests/ --basetemp=release/_test/v2.7-pytest -q
+Expand-Archive .\release\search-mcp-v2.9.zip .\release\_test\v2.9-smoke
+$env:MCP_TEST_EXE = (Resolve-Path .\release\_test\v2.9-smoke\search-mcp-v2.9\search-mcp.exe).Path
+python -m pytest tests/ --basetemp=release/_test/v2.9-pytest -q
 Remove-Item Env:MCP_TEST_EXE
 ```
 
@@ -227,8 +236,8 @@ Remove-Item Env:MCP_TEST_EXE
 真实 API 验证需要有效私有配置，只向隔离目录复制：
 
 ```powershell
-Copy-Item .\config.json .\release\_test\v2.7-smoke\search-mcp-v2.7\config.json
-python release/test_release.py release/_test/v2.7-smoke/search-mcp-v2.7
+Copy-Item .\config.json .\release\_test\v2.9-smoke\search-mcp-v2.9\config.json
+python release/test_release.py release/_test/v2.9-smoke/search-mcp-v2.9
 ```
 
 网络或供应商失败需单独报告，不能用传输测试替代真实调用结论。
@@ -248,10 +257,26 @@ logs/              运行日志
 build.ps1          构建并检查目录发行版产物
 clean.ps1          清理构建与缓存，支持 -WhatIf
 search-mcp.spec    Windows 目录发行版构建配置
-release/           v2.5/v2.6 历史发行版、v2.7 发行版及 ZIP + test_release.py
+release/           v2.6/v2.7/v2.8 历史发行版、v2.9 发行版及 ZIP + test_release.py
 ```
 
 ## 更新日志
+
+### v2.9（2026-10-07）
+
+- 同步 MCP 握手版本为 2.9，沿用 v2.8 的工具签名、配置和故障转移行为。
+- 更新项目自有文档、版本入口和历史验证指引，提供与当前源码对应的 Windows 目录发行包。
+
+### v2.8（2026-10-07）
+
+- 新增搜索与抓取总预算，默认按启用节点超时合计；限制整个节点执行过程，保留故障转移顺序。
+- 搜索空结果不再熔断；至少一个节点正常响应但所有结果为空时，返回“未找到相关结果”。
+- 全部节点失败或总预算耗尽时返回 MCP 工具错误（`isError: true`）；成功结果格式保持兼容。
+- 熔断冷却后只允许一个恢复探测，取消及总预算截止均释放探测状态。
+- 修正节点超时与总预算同时到期的归类：当前节点仍触发熔断；更短总预算提前截断时不熔断。
+- 严格校验时长、布尔开关、配置对象、查询与 URL；补充节点及整次调用耗时日志。
+- Windows 目录发行版新增三种传输的 mock 长文分页验证，续读不重复请求上游。
+
 
 ### v2.7（2026-10-07）
 

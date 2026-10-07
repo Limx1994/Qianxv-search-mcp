@@ -117,6 +117,7 @@ async def _check_stdio(proc: asyncio.subprocess.Process) -> None:
         "params": {"name": "search", "arguments": {"query": "test"}},
     })
     assert "所有节点均不可用" in called["result"]["content"][0]["text"]
+    assert called["result"]["isError"] is True
 
 
 async def _check_http(port: int) -> None:
@@ -129,6 +130,7 @@ async def _check_http(port: int) -> None:
             assert {tool.name for tool in listed.tools} == {"search", "extract"}
             called = await session.call_tool("extract", {"url": "https://example.test"})
             assert "所有节点均不可用" in called.content[0].text
+            assert called.is_error is True
 
 
 def _page_cursor(output: str) -> str:
@@ -436,5 +438,123 @@ def test_release_no_temp_concurrent(release_exe: Path) -> None:
         finally:
             await asyncio.gather(*(_stop(proc) for proc in processes))
         _check_no_mei()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("transport", ["stdio", "streamable-http", "both"])
+def test_release_long_extract_paging(release_exe: Path, transport: str) -> None:
+    async def exercise() -> None:
+        requests = []
+
+        async def respond(reader, writer):
+            header = await reader.readuntil(b"\r\n\r\n")
+            length = next(
+                int(line.split(b":", 1)[1]) for line in header.splitlines()
+                if line.lower().startswith(b"content-length:")
+            )
+            requests.append(json.loads(await reader.readexactly(length)))
+            body = json.dumps({"data": {
+                "url": "https://example.test/long", "title": "Page",
+                "content": "文" * 8000 + "TARGET",
+            }}, ensure_ascii=False).encode("utf-8")
+            writer.write(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                + f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode()
+                + body
+            )
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+
+        async with await asyncio.start_server(respond, "127.0.0.1", 0) as upstream:
+            upstream_port = upstream.sockets[0].getsockname()[1]
+            path = release_exe.parent / "config.json"
+            config = json.loads(path.read_text(encoding="utf-8"))
+            config["extract_nodes"] = [{
+                "name": "mock", "type": "anysearch_extract", "enabled": True,
+                "api_key": "mock-key", "timeout_seconds": 5,
+                "options": {"endpoint": f"http://127.0.0.1:{upstream_port}/extract"},
+            }]
+            path.write_text(json.dumps(config), encoding="utf-8")
+            port = _free_port()
+            args = () if transport == "stdio" else (
+                "--transport", transport, "--port", str(port),
+            )
+            proc = await _start(*args, executable=release_exe)
+            try:
+                if transport != "stdio":
+                    await _wait_http(port)
+                    await _check_long_http(port)
+                if transport != "streamable-http":
+                    await _check_long_stdio(proc)
+                if transport == "stdio":
+                    proc.stdin.close()
+                    assert await asyncio.wait_for(proc.wait(), 15) == 0
+                _check_no_mei()
+            finally:
+                await _stop(proc)
+            _check_no_mei()
+            expected = 2 if transport == "both" else 1
+            assert requests == [{"url": "https://example.test/long"}] * expected
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("kind", ["search", "extract"])
+@pytest.mark.parametrize("budget", [None, 0.15, 0.05], ids=["default", "equal", "shorter"])
+def test_release_timeout_breaker(release_exe: Path, kind: str, budget) -> None:
+    async def exercise() -> None:
+        requests = []
+
+        async def stalled(reader, writer):
+            try:
+                await reader.readuntil(b"\r\n\r\n")
+                requests.append(1)
+                await reader.read()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        async with await asyncio.start_server(stalled, "127.0.0.1", 0) as upstream:
+            port = upstream.sockets[0].getsockname()[1]
+            config = {"nodes": [{"name": "disabled", "type": "tavily", "enabled": False}]}
+            section = "nodes" if kind == "search" else "extract_nodes"
+            config[section] = [{
+                "name": "mock", "type": "tavily" if kind == "search" else "anysearch_extract",
+                "enabled": True, "api_key": "mock-key", "timeout_seconds": 0.15,
+                "options": {"endpoint": f"http://127.0.0.1:{port}/{kind}"},
+            }]
+            if budget is not None:
+                config["failover"] = {f"{kind}_timeout_seconds": budget}
+            (release_exe.parent / "config.json").write_text(json.dumps(config), encoding="utf-8")
+            proc = await _start(executable=release_exe)
+            try:
+                await _rpc(proc, {
+                    "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-11-25", "capabilities": {},
+                        "clientInfo": {"name": "test", "version": "1"},
+                    },
+                })
+                proc.stdin.write(b'{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
+                await proc.stdin.drain()
+                arguments = {"query": "test"} if kind == "search" else {"url": "https://example.test/a"}
+                for request_id in (2, 3):
+                    response = await _rpc(proc, {
+                        "jsonrpc": "2.0", "id": request_id, "method": "tools/call",
+                        "params": {"name": kind, "arguments": arguments},
+                    })
+                    assert response["result"]["isError"] is True
+                    text = response["result"]["content"][0]["text"]
+                    if request_id == 2 and budget != 0.05:
+                        assert "node timeout" in text
+                    if request_id == 3 and budget != 0.05:
+                        assert "breaker open" in text
+                proc.stdin.close()
+                assert await asyncio.wait_for(proc.wait(), 15) == 0
+            finally:
+                await _stop(proc)
+            assert len(requests) == (2 if budget == 0.05 else 1)
 
     asyncio.run(exercise())

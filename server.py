@@ -11,12 +11,14 @@ from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from typing import Annotated
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 import httpx
 import uvicorn
 
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import Field
 
 from config_loader import load_config
@@ -26,14 +28,17 @@ from providers.extract_base import ExtractResult
 from search_router import (
     AllProvidersFailedError,
     ExtractRouter,
+    RequestTimeoutError,
     SearchRouter,
 )
 
 setup_logging()
 _cfg = load_config()
-_router = SearchRouter(build_providers(_cfg), _cfg.breaker_seconds)
+_router = SearchRouter(
+    build_providers(_cfg), _cfg.breaker_seconds, _cfg.search_timeout_seconds
+)
 _extract_router = ExtractRouter(
-    build_extract_providers(_cfg), _cfg.breaker_seconds
+    build_extract_providers(_cfg), _cfg.breaker_seconds, _cfg.extract_timeout_seconds
 )
 _client_lock = asyncio.Lock()
 _client_stack: AsyncExitStack | None = None
@@ -140,7 +145,7 @@ async def _lifespan(_server: MCPServer) -> AsyncIterator[None]:
                     await stack.aclose()
 
 
-mcp = MCPServer("Qianxv-search-mcp", lifespan=_lifespan)
+mcp = MCPServer("Qianxv-search-mcp", version="2.9", lifespan=_lifespan)
 
 @mcp.tool()
 async def search(
@@ -158,11 +163,17 @@ async def search(
     """
     if max_results < 1:
         raise ValueError("max_results must be greater than or equal to 1")
+    if not query.strip():
+        raise ToolError("query must contain non-whitespace characters")
     try:
         results, provider = await _router.search(query, max_results)
+    except RequestTimeoutError as exc:
+        raise ToolError(f"搜索失败：调用总预算已耗尽。{exc}") from exc
     except AllProvidersFailedError as exc:
-        return f"搜索失败：所有节点均不可用。{exc}"
+        raise ToolError(f"搜索失败：所有节点均不可用。{exc}") from exc
     lines = [f"来源节点: {provider}，共 {len(results)} 条结果："]
+    if not results:
+        lines.append("未找到相关结果。")
     for idx, item in enumerate(results, 1):
         lines.append(f"{idx}. {item.title}")
         lines.append(f"   URL: {item.url}")
@@ -189,13 +200,25 @@ async def extract(
     """
     if offset < 0:
         raise ValueError("offset must be greater than or equal to 0")
+    try:
+        parsed = urlsplit(url)
+        if (
+            parsed.scheme not in ("http", "https") or not parsed.hostname
+            or any(char.isspace() or ord(char) < 32 for char in url)
+        ):
+            raise ValueError("invalid URL")
+        parsed.port
+    except ValueError as exc:
+        raise ToolError("url must be an absolute HTTP/HTTPS URL") from exc
     if snapshot_id is None:
         if offset:
             raise ValueError("snapshot_id is required for a nonzero offset")
         try:
             result, provider = await _extract_router.extract(url)
+        except RequestTimeoutError as exc:
+            raise ToolError(f"抓取失败：调用总预算已耗尽。{exc}") from exc
         except AllProvidersFailedError as exc:
-            return f"抓取失败：所有节点均不可用。{exc}"
+            raise ToolError(f"抓取失败：所有节点均不可用。{exc}") from exc
         if len(result.content) > _EXTRACT_MAX_CHARS:
             # 只有需要续读的正文才占用快照容量；后续分页不再请求上游。
             snapshot_id = _extract_cache.put(url, result, provider)

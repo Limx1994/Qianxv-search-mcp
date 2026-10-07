@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -52,6 +53,21 @@ class AppConfig:
     breaker_seconds: float
     nodes: list[NodeConfig]
     extract_nodes: list[NodeConfig] = field(default_factory=list)
+    search_timeout_seconds: float | None = None
+    extract_timeout_seconds: float | None = None
+
+
+def _seconds(value: object, label: str, allow_zero: bool = False) -> float:
+    try:
+        if isinstance(value, bool):
+            raise ValueError("boolean is not a duration")
+        seconds = float(value)
+    except (ValueError, TypeError, OverflowError) as exc:
+        raise ConfigError(f"invalid {label}: expected a finite number") from exc
+    if not math.isfinite(seconds) or seconds < 0 or (seconds == 0 and not allow_zero):
+        rule = "non-negative" if allow_zero else "positive"
+        raise ConfigError(f"invalid {label}: must be finite and {rule}")
+    return seconds
 
 
 def _parse_node_list(
@@ -79,17 +95,17 @@ def _parse_node_list(
         options = item.get("options", {}) or {}
         if not isinstance(options, dict):
             raise ConfigError(f"node '{name}' options must be an object")
-        try:
-            timeout_seconds = float(item.get("timeout_seconds", 10.0))
-        except (ValueError, TypeError) as exc:
-            raise ConfigError(
-                f"node '{name}' has invalid timeout_seconds: {exc}"
-            ) from exc
+        timeout_seconds = _seconds(
+            item.get("timeout_seconds", 10.0), f"node '{name}' timeout_seconds"
+        )
+        enabled = item.get("enabled", True)
+        if not isinstance(enabled, bool):
+            raise ConfigError(f"node '{name}' enabled must be a boolean")
         nodes.append(
             NodeConfig(
                 name=name,
                 type=node_type,
-                enabled=bool(item.get("enabled", True)),
+                enabled=enabled,
                 api_key=str(item.get("api_key", "")),
                 timeout_seconds=timeout_seconds,
                 options=options,
@@ -107,13 +123,19 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
     except json.JSONDecodeError as exc:
         raise ConfigError(f"invalid JSON in {path}: {exc}") from exc
 
-    failover = raw.get("failover", {}) or {}
-    try:
-        breaker_seconds = float(failover.get("breaker_seconds", 60))
-    except (ValueError, TypeError) as exc:
-        raise ConfigError(
-            f"invalid breaker_seconds: {exc}"
-        ) from exc
+    if not isinstance(raw, dict):
+        raise ConfigError("config root must be an object")
+    failover = raw.get("failover", {})
+    if not isinstance(failover, dict):
+        raise ConfigError("failover must be an object")
+    breaker_seconds = _seconds(
+        failover.get("breaker_seconds", 60), "failover.breaker_seconds", True
+    )
+    budgets = {}
+    for key in ("search_timeout_seconds", "extract_timeout_seconds"):
+        budgets[key] = (
+            _seconds(failover[key], f"failover.{key}") if key in failover else None
+        )
 
     nodes = _parse_node_list(raw.get("nodes"), SUPPORTED_TYPES, "nodes")
     extract_nodes: list[NodeConfig] = []
@@ -128,4 +150,5 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
         breaker_seconds=breaker_seconds,
         nodes=nodes,
         extract_nodes=extract_nodes,
+        **budgets,
     )
