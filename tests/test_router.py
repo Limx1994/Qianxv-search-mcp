@@ -126,9 +126,9 @@ def test_load_config_and_disabled_filter(tmp_path):
         {"name": "n3", "type": "qianfan", "enabled": True,
          "api_key": "k3", "timeout_seconds": 8,
          "options": {"endpoint": "https://e3"}},
-        {"name": "n4", "type": "brightdata", "enabled": True,
+        {"name": "n4", "type": "volc_ark", "enabled": True,
          "api_key": "k4", "timeout_seconds": 60,
-         "options": {"endpoint": "https://e4", "engine": "google"}},
+         "options": {"endpoint": "https://e4"}},
     ]
     cfg = load_config(_write_tmp_config(tmp_path, nodes))
     assert [n.name for n in cfg.nodes] == ["n1", "n2", "n3", "n4"]
@@ -138,8 +138,9 @@ def test_load_config_and_disabled_filter(tmp_path):
     assert [p.name for p in providers] == ["n1", "n3", "n4"]
 
 
-def test_load_config_rejects_bad_type(tmp_path):
-    nodes = [{"name": "x", "type": "unknown", "enabled": True,
+@pytest.mark.parametrize("node_type", ["unknown", "brightdata"])
+def test_load_config_rejects_bad_type(tmp_path, node_type):
+    nodes = [{"name": "x", "type": node_type, "enabled": True,
               "api_key": "k", "timeout_seconds": 3, "options": {}}]
     with pytest.raises(ConfigError):
         load_config(_write_tmp_config(tmp_path, nodes))

@@ -3,8 +3,8 @@
 供大模型（MCP 客户端）调用的本地搜索与网页抓取服务：
 
 - `search` 工具：支持 Tavily、AnySearch、百度千帆、火山引擎豆包、
-  知乎全网搜索、Bright Data 六种搜索源
-- `extract` 工具：支持 AnySearch、Tavily 两种抓取源，
+  知乎全网搜索和本机 DDGS 搜索
+- `extract` 工具：支持 AnySearch、Tavily 和本机 HTML 抓取，
   提取公开网页标题与 Markdown 正文
 
 实际启用的节点及故障转移顺序由 `config.json` 决定。
@@ -17,20 +17,22 @@
 
 - 源码方式：Python 3.10+，当前构建环境为 Python 3.14.6
 - 依赖：`python -m pip install -r requirements.txt`
-- Windows exe 方式：无需安装 Python，见 [v2.9 安装说明](release/search-mcp-v2.9/安装说明.md)
+- Windows exe 方式：无需安装 Python，见 [v2.10 安装说明](release/search-mcp-v2.10/安装说明.md)
 
 ## 配置
 
-首次使用源码时，在仓库根目录从无密钥模板创建配置，再填写自己的 API Key。
+首次使用源码时，在仓库根目录从无密钥模板创建配置；云节点填写自己的 API Key，
+本机节点无需密钥。
 已有 `config.json` 时不要覆盖：
 
 ```powershell
 if (-not (Test-Path .\config.json)) {
-    Copy-Item .\release\search-mcp-v2.9\config.example.json .\config.json
+    Copy-Item .\config.example.json .\config.json
 }
 ```
 
-模板只预置 Tavily 搜索和 AnySearch 抓取，密钥均为空；不代表所有支持的节点都已启用。
+根目录模板预置 Tavily 搜索、AnySearch 抓取，并在各数组末尾启用本机兜底，密钥均为空。
+v2.10 模板与根目录模板一致；历史 v2.8/v2.9 模板只包含云节点，旧版 exe 不支持本机节点类型。
 源码从项目根目录读取配置，发行版从 exe 同目录读取配置。配置缺失或非法会阻止启动，修改后须重启服务。
 
 所有节点由 `config.json` 配置：
@@ -38,8 +40,8 @@ if (-not (Test-Path .\config.json)) {
 - `nodes` 数组顺序 = 搜索故障转移顺序；`extract_nodes` 数组顺序 =
   抓取故障转移顺序（可省略；提供时须为非空数组，不能为 null）
 - 每节点：`name` / `type`（搜索：anysearch|qianfan|volc_ark|tavily|
-  brightdata|zhihu；抓取：anysearch_extract|tavily_extract）/
-  `enabled`（默认 true，false 则跳过）/ `api_key` / `timeout_seconds`（默认 10 秒）/ `options`（端点等）
+  zhihu|local_search；抓取：anysearch_extract|tavily_extract|local_extract）/
+  `enabled`（默认 true，false 则跳过）/ `api_key` / `timeout_seconds`（本机抓取默认 15 秒，其余默认 10 秒）/ `options`（端点等）
 - `name` 在同一数组内必须唯一；`nodes` 必须为非空数组。
   全部节点禁用时服务仍可启动，但工具调用会返回所有节点不可用
 - `failover.breaker_seconds`：节点失败后的熔断窗口（默认 60 秒，
@@ -58,15 +60,53 @@ if (-not (Test-Path .\config.json)) {
 > （https://console.volcengine.com/search-infinity/api-key）创建的
 > 专用 API Key（不能使用方舟 ark Key 代替）。
 >
-> Bright Data 节点走官方 MCP 端点
-> （`https://mcp.brightdata.com/mcp`，`search_engine` 工具，
-> Google/Bing/Yandex 引擎），支持 `engine`、`geo_location` 配置。
-> 账号产品权限和额度需自行确认，返回空结果时自动切换下一节点。
+> Bright Data 因使用门槛高，当前版本暂时移除，不再支持 `brightdata` 节点。
+> 旧配置升级前请删除该节点，其余节点与凭证保留。
 >
 > 知乎节点走数据开放平台「全网搜索」接口
 > （`GET https://developer.zhihu.com/api/v1/content/global_search`，
 > Bearer + 秒级时间戳鉴权），使用个人中心
 > （https://developer.zhihu.com/profile）创建的 Access Secret。
+
+## 无需云 API 的本机兜底
+
+`local_search` 通过 [DDGS](https://pypi.org/project/ddgs/) 在本机访问搜索引擎，
+`local_extract` 使用共享 `httpx` 客户端下载网页，再通过
+[Trafilatura](https://trafilatura.readthedocs.io/) 在本机提取标题和 Markdown 正文。
+两个节点均不使用 API key，仍需联网；只启用这两个节点也可运行。
+
+- 将根目录模板中的本机节点追加到现有配置对应数组末尾，重启后即可兜底。
+  保留已有云节点和凭证；不要用模板覆盖私有配置。
+- 搜索默认超时 10 秒，`options.backend` 默认 `auto`（`all` 等价）。每次查询并发
+  尝试当前 DDGS 版本启用的全部 text 引擎和 `bing_html`，返回首个非空有效结果；
+  失败或空结果不会阻止其他引擎，全部失败时明确报告。所有尝试共享节点超时，
+  不按测试机器固化可用引擎，也不将超时时间乘以引擎数量。
+  DDGS 9.16.0 启用的 text 引擎为 `brave`、`duckduckgo`、`google`、`grokipedia`、
+  `mojeek`、`startpage`、`wikipedia`、`yahoo`，实际可用性取决于运行机器的网络。
+  `backend` 可指定单个引擎或逗号分隔的引擎列表（如 `duckduckgo,google,bing_html`），
+  限定尝试范围；列表同样返回首个有效结果，单个引擎不会自动换用其他引擎。
+  `options.region` 默认 `cn-zh`。未知和禁用引擎明确报错，`auto`/`all` 必须单独使用。
+  `bing_html` 通过共享 `httpx` 下载 Bing HTML 并复用 DDGS 解析器；它独立于 DDGS
+  已禁用的原生 `bing` 和 `yandex` text 后端。DDGS 代理通过 `DDGS_PROXY` 配置；`bing_html`
+  和抓取沿用 `httpx` 的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、`NO_PROXY`。
+- 抓取默认超时 15 秒，单页下载上限 5 MiB，仅接受 HTTP/HTTPS HTML 页面，
+  最多跟随 5 次重定向；每一跳均检查 URL，拒绝 localhost、直接输入的非公网 IP
+  和带凭证 URL。不向目标发送 API key 或 cookies。
+- 抓取保留原始域名，使用标准 `httpx` 网络行为：有代理按代理配置请求，
+  `NO_PROXY` 匹配时直连，没有代理时使用系统 DNS 和正常连接。
+  支持 HTTP、HTTPS、SOCKS5 和 SOCKS5h 代理，代理认证沿用环境配置；
+  目标域名可以由代理解析，不要求本机能够解析代理端目标。
+  HTTP 和 HTTPS 均不设置机器专属 DNS 网段或代理信任名单。
+  旧的 `trusted_dns_networks` 和 `trusted_proxy_urls` 选项不再影响请求。
+  HTTPS 始终校验证书，目标和 HTTPS 代理分别使用各自的 TLS 身份；
+  证书信任沿用 `httpx` 的 `SSL_CERT_FILE`、`SSL_CERT_DIR` 配置。
+- 首版不运行 JavaScript，不处理登录或验证码，也不提供 PDF 提取、离线索引。
+  搜索引擎不可达、限流或网页无法提取时会明确失败；本机兜底不能保证任意网站可用。
+- 默认总预算会累加新增节点超时。若显式设置整次预算，须为末尾兜底留出时间；
+  预算耗尽会停止尝试，客户端超时也应覆盖服务端预算。云节点原有超时仍决定兜底前
+  的最长等待时间。
+- DDGS 搜索和正文解析在线程中执行，Bing 下载使用异步 HTTP。取消或节点超时可结束等待，底层同步任务可能持续到
+  自身执行结束或网络超时。
 
 ## 各搜索源凭证与额度
 
@@ -77,7 +117,7 @@ if (-not (Test-Path .\config.json)) {
 | 百度千帆 | 千帆 API Key |
 | 火山豆包 | 联网搜索 Custom 专用 API Key |
 | 知乎全网 | Access Secret |
-| Bright Data | Bright Data API Token，需具备对应产品权限 |
+| 本机 DDGS / HTML 抓取 | 无需凭证，需能访问搜索引擎或目标网页 |
 
 免费额度、开通条件和计费以供应商控制台为准。额度耗尽导致节点失败时
 自动切换下一节点，全部失败才报错。
@@ -125,15 +165,15 @@ HTTP 客户端应选择 Streamable HTTP 传输并填入该 URL。
   "mcpServers": {
     "Qianxv-search-mcp": {
       "type": "stdio",
-      "command": "D:/Qianxv-search-mcp/release/search-mcp-v2.9/search-mcp.exe",
+      "command": "D:/Qianxv-search-mcp/release/search-mcp-v2.10/search-mcp.exe",
       "args": []
     }
   }
 }
 ```
 
-上例为 v2.9 发行版，使用前须按
-[安装说明](release/search-mcp-v2.9/安装说明.md)从无密钥模板创建 `config.json`。
+上例为 v2.10 发行版，使用前须按
+[安装说明](release/search-mcp-v2.10/安装说明.md)从无密钥模板创建 `config.json`。
 请将示例中的绝对路径替换为实际安装路径。无参数时保持 stdio；
 `--transport streamable-http` 和 `--transport both` 用法见安装说明。
 发行版采用目录打包，必须将 `search-mcp.exe` 与旁边的 `_internal/`
@@ -163,7 +203,7 @@ HTTP 客户端应选择 Streamable HTTP 传输并填入该 URL。
 
 ## 工具说明
 
-以下分页说明适用于当前源码和 v2.9 发行版。
+以下分页说明适用于当前源码和 v2.10 发行版。
 历史 v2.0 和 v2.1 仅支持 `extract(url)`，正文超过 8000 字符会截断，
 不提供 `offset`、`snapshot_id` 或续读能力。
 
@@ -183,11 +223,11 @@ HTTP 客户端应选择 Streamable HTTP 传输并填入该 URL。
 
 ## 日志
 
-当前源码和 v2.9 使用 `logs/mcp_search_<PID>.log`，每个进程
+当前源码和 v2.10 使用 `logs/mcp_search_<PID>.log`，每个进程
 写入自己的日志，记录节点调用、失败原因与熔断跳过；v2.8 起还记录节点成功/失败耗时、整次调用耗时、尝试与跳过数量和原因，空结果单独记录。每个进程的单个日志文件
 上限为 2,000,000 字节，保留 3 个备份。历史 v2.0 和 v2.1 仍使用
 `logs/mcp_search.log`；这些旧版同时运行多个实例时应使用不同安装目录，
-或升级到 v2.9，避免共享日志轮转冲突。日志目录创建失败时回退到系统临时目录下的 `qianxv-search-mcp-logs/`；
+或升级到 v2.10，避免共享日志轮转冲突。日志目录创建失败时回退到系统临时目录下的 `qianxv-search-mcp-logs/`；
 该回退不涵盖日志文件打开失败。日志仍属于私有数据，勿上传或分发。
 
 ## 开发与验证
@@ -224,9 +264,9 @@ Python/pytest/ruff 缓存时可先预览再执行：
 完整 `_internal/` 和配置模板。无密钥测试会自动复制依赖，并生成禁用节点的隔离配置：
 
 ```powershell
-Expand-Archive .\release\search-mcp-v2.9.zip .\release\_test\v2.9-smoke
-$env:MCP_TEST_EXE = (Resolve-Path .\release\_test\v2.9-smoke\search-mcp-v2.9\search-mcp.exe).Path
-python -m pytest tests/ --basetemp=release/_test/v2.9-pytest -q
+Expand-Archive .\release\search-mcp-v2.10.zip .\release\_test\v2.10-smoke
+$env:MCP_TEST_EXE = (Resolve-Path .\release\_test\v2.10-smoke\search-mcp-v2.10\search-mcp.exe).Path
+python -m pytest tests/ --basetemp=release/_test/v2.10-pytest -q
 Remove-Item Env:MCP_TEST_EXE
 ```
 
@@ -236,8 +276,8 @@ Remove-Item Env:MCP_TEST_EXE
 真实 API 验证需要有效私有配置，只向隔离目录复制：
 
 ```powershell
-Copy-Item .\config.json .\release\_test\v2.9-smoke\search-mcp-v2.9\config.json
-python release/test_release.py release/_test/v2.9-smoke/search-mcp-v2.9
+Copy-Item .\config.json .\release\_test\v2.10-smoke\search-mcp-v2.10\config.json
+python release/test_release.py release/_test/v2.10-smoke/search-mcp-v2.10
 ```
 
 网络或供应商失败需单独报告，不能用传输测试替代真实调用结论。
@@ -257,10 +297,18 @@ logs/              运行日志
 build.ps1          构建并检查目录发行版产物
 clean.ps1          清理构建与缓存，支持 -WhatIf
 search-mcp.spec    Windows 目录发行版构建配置
-release/           v2.6/v2.7/v2.8 历史发行版、v2.9 发行版及 ZIP + test_release.py
+release/           v2.8/v2.9 历史发行版、v2.10 发行版及 ZIP + test_release.py
 ```
 
 ## 更新日志
+
+### v2.10（2026-10-08）
+
+- 新增无需云 API key 的本机 DDGS 搜索及 HTML 正文提取，模板在云节点后启用本机兜底。
+- 本机搜索自动并发尝试启用的 DDGS text 引擎及 `bing_html`，共享节点预算并返回首个有效结果；支持指定引擎列表。
+- 本机抓取沿用系统 DNS、环境代理和 TLS 校验，支持 HTTP/HTTPS/SOCKS 代理；限制页面大小与重定向次数。
+- 移除 Bright Data 节点；升级前须从旧配置删除 `brightdata`，保留其他节点与凭证。
+- 同步 MCP 握手版本为 2.10，更新文档及 Windows 目录发行包；保留 v2.8/v2.9，移除 v2.6/v2.7 发行包。
 
 ### v2.9（2026-10-07）
 

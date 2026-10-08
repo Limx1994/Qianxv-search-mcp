@@ -212,6 +212,93 @@ def test_stdio_default() -> None:
     asyncio.run(exercise())
 
 
+def test_release_socks_extract(release_exe: Path, monkeypatch, tmp_path: Path) -> None:
+    import ssl
+
+    from test_local_network import certificate
+
+    declared = json.loads((release_exe.parent / "config.json").read_text(encoding="utf-8"))
+    if not any(node["type"] == "local_extract" for node in declared.get("extract_nodes", [])):
+        pytest.skip("release template does not declare local node support")
+    cert_path, key_path = certificate(tmp_path, "example.test", "93.184.216.34")
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(cert_path, key_path)
+    monkeypatch.setenv("SSL_CERT_FILE", str(cert_path))
+    monkeypatch.setenv("NO_PROXY", "localhost,127.0.0.1")
+
+    async def exercise():
+        body = ("<html><head><title>SOCKS article</title></head><body><article><p>"
+                + "The packaged SOCKS transport extracts this article correctly. " * 20
+                + "</p></article></body></html>").encode()
+        requests = []
+
+        async def upstream(reader, writer):
+            await reader.readuntil(b"\r\n\r\n")
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: "
+                         + str(len(body)).encode() + b"\r\nConnection: close\r\n\r\n" + body)
+            await writer.drain()
+            writer.close()
+
+        async def relay(reader, writer):
+            try:
+                while data := await reader.read(65536):
+                    writer.write(data)
+                    await writer.drain()
+            finally:
+                writer.close()
+
+        async with await asyncio.start_server(upstream, "127.0.0.1", 0, ssl=context) as tls_server:
+            tls_port = tls_server.sockets[0].getsockname()[1]
+
+            async def socks(reader, writer):
+                version, methods = await reader.readexactly(2)
+                assert version == 5
+                await reader.readexactly(methods)
+                writer.write(b"\x05\x00")
+                await writer.drain()
+                assert await reader.readexactly(4) == b"\x05\x01\x00\x01"
+                address = socket.inet_ntoa(await reader.readexactly(4))
+                port = int.from_bytes(await reader.readexactly(2), "big")
+                requests.append((address, port))
+                peer_read, peer_write = await asyncio.open_connection("127.0.0.1", tls_port)
+                writer.write(b"\x05\x00\x00\x01\x7f\x00\x00\x01\x00\x00")
+                await writer.drain()
+                await asyncio.gather(relay(reader, peer_write), relay(peer_read, writer))
+
+            async with await asyncio.start_server(socks, "127.0.0.1", 0) as proxy:
+                proxy_port = proxy.sockets[0].getsockname()[1]
+                monkeypatch.setenv("HTTPS_PROXY", f"socks5://127.0.0.1:{proxy_port}")
+                config = {
+                    "nodes": [{"name": "local-search", "type": "local_search"}],
+                    "extract_nodes": [{"name": "local-extract", "type": "local_extract"}],
+                }
+                (release_exe.parent / "config.json").write_text(json.dumps(config), encoding="utf-8")
+                proc = await _start(executable=release_exe)
+                try:
+                    await _rpc(proc, {
+                        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                        "params": {"protocolVersion": "2025-11-25", "capabilities": {},
+                                   "clientInfo": {"name": "test", "version": "1"}},
+                    })
+                    proc.stdin.write(b'{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
+                    await proc.stdin.drain()
+                    response = await _rpc(proc, {
+                        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                        "params": {"name": "extract", "arguments": {"url": "https://93.184.216.34/article"}},
+                    })
+                    result = response["result"]
+                    assert not result.get("isError", False), result
+                    assert "SOCKS article" in result["content"][0]["text"]
+                    proc.stdin.close()
+                    assert await asyncio.wait_for(proc.wait(), 15) == 0
+                finally:
+                    await _stop(proc)
+        assert requests == [("93.184.216.34", 443)]
+        _check_no_mei()
+
+    asyncio.run(exercise())
+
+
 def test_http_only() -> None:
     async def exercise() -> None:
         port = _free_port()
@@ -556,5 +643,120 @@ def test_release_timeout_breaker(release_exe: Path, kind: str, budget) -> None:
             finally:
                 await _stop(proc)
             assert len(requests) == (2 if budget == 0.05 else 1)
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("transport", ["stdio", "streamable-http", "both"])
+def test_release_local_extract(release_exe: Path, monkeypatch, transport: str) -> None:
+    declared = json.loads((release_exe.parent / "config.json").read_text(encoding="utf-8"))
+    if not any(node["type"] == "local_extract" for node in declared.get("extract_nodes", [])):
+        pytest.skip("release template does not declare local node support")
+
+    async def exercise() -> None:
+        requests = []
+        body = ("<html><head><meta charset='utf-8'><title>本机长文章</title></head><body><article>"
+                + "".join(f"<p>段落 {i}。" + "这是需要完整分页的正文内容。" * 30 + "</p>" for i in range(25))
+                + "</article></body></html>").encode("utf-8")
+
+        async def respond(reader, writer):
+            try:
+                header = await reader.readuntil(b"\r\n\r\n")
+                requests.append(header)
+                writer.write(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
+                    + f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode()
+                    + body
+                )
+                await writer.drain()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        async with await asyncio.start_server(respond, "127.0.0.1", 0) as proxy:
+            proxy_port = proxy.sockets[0].getsockname()[1]
+            monkeypatch.setenv("HTTP_PROXY", f"http://127.0.0.1:{proxy_port}")
+            monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
+            # 使用公开 IP 和本机测试代理，无需公网 DNS 或外部服务。
+            config = {
+                "nodes": [{"name": "local-search", "type": "local_search",
+                           "options": {"backend": "bing"}}],
+                "extract_nodes": [{"name": "local-extract", "type": "local_extract"}],
+            }
+            (release_exe.parent / "config.json").write_text(json.dumps(config), encoding="utf-8")
+            port = _free_port()
+            args = () if transport == "stdio" else (
+                "--transport", transport, "--port", str(port),
+            )
+            proc = await _start(*args, executable=release_exe)
+            checked_search = False
+
+            async def check(call):
+                nonlocal checked_search
+                if not checked_search:
+                    error, text = await call("search", {"query": "中文"})
+                    assert error and "unsupported or disabled text backend" in text
+                    checked_search = True
+                url = "http://93.184.216.34/article"
+                arguments = {"url": url}
+                parts = []
+                while True:
+                    error, text = await call("extract", arguments)
+                    assert not error, text
+                    headers, content = text.split("---\n", 1)
+                    assert "来源节点: local-extract" in headers
+                    assert "标题: 本机长文章" in headers
+                    parts.append(content)
+                    fields = dict(line.split(": ", 1) for line in headers.splitlines() if ": " in line)
+                    if fields["has_more"] == "false":
+                        break
+                    arguments = {"url": url, "offset": int(fields["next_offset"]),
+                                 "snapshot_id": fields["snapshot_id"]}
+                joined = "".join(parts)
+                assert len(joined) == int(fields["total_chars"]) > 8000
+                assert "段落 0。" in joined and "段落 24。" in joined
+
+            try:
+                if transport != "stdio":
+                    await _wait_http(port)
+                    async with streamable_http_client(f"http://127.0.0.1:{port}/mcp") as (read, write):
+                        async with ClientSession(read, write) as session:
+                            await session.initialize()
+
+                            async def call_http(name, arguments):
+                                result = await session.call_tool(name, arguments)
+                                return result.is_error, result.content[0].text
+
+                            await check(call_http)
+                if transport != "streamable-http":
+                    await _rpc(proc, {
+                        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                        "params": {"protocolVersion": "2025-11-25", "capabilities": {},
+                                   "clientInfo": {"name": "test", "version": "1"}},
+                    })
+                    proc.stdin.write(b'{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
+                    await proc.stdin.drain()
+                    request_id = 1
+
+                    async def call_stdio(name, arguments):
+                        nonlocal request_id
+                        request_id += 1
+                        response = await _rpc(proc, {
+                            "jsonrpc": "2.0", "id": request_id, "method": "tools/call",
+                            "params": {"name": name, "arguments": arguments},
+                        })
+                        result = response["result"]
+                        return result.get("isError", False), result["content"][0]["text"]
+
+                    await check(call_stdio)
+                if transport == "stdio":
+                    proc.stdin.close()
+                    assert await asyncio.wait_for(proc.wait(), 15) == 0
+            finally:
+                await _stop(proc)
+            _check_no_mei()
+            assert len(requests) == (2 if transport == "both" else 1)
+            assert all(b"GET http://93.184.216.34/article " in req for req in requests)
+            assert all(b"authorization:" not in req.lower() for req in requests)
 
     asyncio.run(exercise())

@@ -1,12 +1,14 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
 
 a = Analysis(
     ['server.py'],
     pathex=[],
     binaries=[],
-    datas=[('LICENSE', '.')],
-    hiddenimports=[],
+    datas=[('LICENSE', '.'), *collect_data_files('trafilatura'),
+           *collect_data_files('justext'), *copy_metadata('socksio')],
+    hiddenimports=['ddgs.ddgs', *collect_submodules('ddgs.engines')],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

@@ -1,0 +1,48 @@
+{
+  "failover": {
+    "breaker_seconds": 60
+  },
+  "nodes": [
+    {
+      "name": "tavily",
+      "type": "tavily",
+      "enabled": true,
+      "api_key": "",
+      "timeout_seconds": 10,
+      "options": {
+        "endpoint": "https://api.tavily.com/search"
+      }
+    },
+    {
+      "name": "local-search",
+      "type": "local_search",
+      "enabled": true,
+      "api_key": "",
+      "timeout_seconds": 10,
+      "options": {
+        "backend": "auto",
+        "region": "cn-zh"
+      }
+    }
+  ],
+  "extract_nodes": [
+    {
+      "name": "anysearch-extract",
+      "type": "anysearch_extract",
+      "enabled": true,
+      "api_key": "",
+      "timeout_seconds": 10,
+      "options": {
+        "endpoint": "https://api.anysearch.com/v1/extract"
+      }
+    },
+    {
+      "name": "local-extract",
+      "type": "local_extract",
+      "enabled": true,
+      "api_key": "",
+      "timeout_seconds": 15,
+      "options": {}
+    }
+  ]
+}

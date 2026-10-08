@@ -24,10 +24,10 @@ SUPPORTED_TYPES = {
     "qianfan",
     "volc_ark",
     "tavily",
-    "brightdata",
     "zhihu",
+    "local_search",
 }
-SUPPORTED_EXTRACT_TYPES = {"anysearch_extract", "tavily_extract"}
+SUPPORTED_EXTRACT_TYPES = {"anysearch_extract", "tavily_extract", "local_extract"}
 
 
 class ConfigError(Exception):
@@ -96,7 +96,8 @@ def _parse_node_list(
         if not isinstance(options, dict):
             raise ConfigError(f"node '{name}' options must be an object")
         timeout_seconds = _seconds(
-            item.get("timeout_seconds", 10.0), f"node '{name}' timeout_seconds"
+            item.get("timeout_seconds", 15.0 if node_type == "local_extract" else 10.0),
+            f"node '{name}' timeout_seconds",
         )
         enabled = item.get("enabled", True)
         if not isinstance(enabled, bool):

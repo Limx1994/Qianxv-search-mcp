@@ -7,8 +7,9 @@ from typing import TYPE_CHECKING
 from .anysearch import AnySearchProvider
 from .anysearch_extract import AnySearchExtractProvider
 from .base import SearchProvider
-from .brightdata import BrightDataProvider
 from .extract_base import ExtractProvider
+from .local_extract import LocalExtractProvider
+from .local_search import LocalSearchProvider
 from .qianfan import QianfanProvider
 from .tavily import TavilyProvider
 from .tavily_extract import TavilyExtractProvider
@@ -23,13 +24,14 @@ PROVIDER_REGISTRY: dict[str, type[SearchProvider]] = {
     "qianfan": QianfanProvider,
     "volc_ark": VolcArkProvider,
     "tavily": TavilyProvider,
-    "brightdata": BrightDataProvider,
     "zhihu": ZhihuProvider,
+    "local_search": LocalSearchProvider,
 }
 
 EXTRACT_REGISTRY: dict[str, type[ExtractProvider]] = {
     "anysearch_extract": AnySearchExtractProvider,
     "tavily_extract": TavilyExtractProvider,
+    "local_extract": LocalExtractProvider,
 }
 
 
