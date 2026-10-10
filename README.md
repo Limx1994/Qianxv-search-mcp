@@ -32,7 +32,7 @@ if (-not (Test-Path .\config.json)) {
 ```
 
 根目录模板预置 Tavily 搜索、AnySearch 抓取，并在各数组末尾启用本机兜底，密钥均为空。
-v2.10 模板与根目录模板一致；历史 v2.8/v2.9 模板只包含云节点，旧版 exe 不支持本机节点类型。
+v2.10 模板与根目录模板一致；历史 v2.9 模板只包含云节点，旧版 exe 不支持本机节点类型。
 源码从项目根目录读取配置，发行版从 exe 同目录读取配置。配置缺失或非法会阻止启动，修改后须重启服务。
 
 所有节点由 `config.json` 配置：
@@ -89,8 +89,9 @@ v2.10 模板与根目录模板一致；历史 v2.8/v2.9 模板只包含云节点
   `bing_html` 通过共享 `httpx` 下载 Bing HTML 并复用 DDGS 解析器；它独立于 DDGS
   已禁用的原生 `bing` 和 `yandex` text 后端。DDGS 代理通过 `DDGS_PROXY` 配置；`bing_html`
   和抓取沿用 `httpx` 的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、`NO_PROXY`。
+  `bing_html` 最多跟随 3 次重定向，仅允许 HTTPS 的 `www.bing.com` 或 `cn.bing.com`（默认端口或 443），拒绝带凭证的跳转 URL；缺少 Location 或超出次数时明确失败。
 - 抓取默认超时 15 秒，单页下载上限 5 MiB，仅接受 HTTP/HTTPS HTML 页面，
-  最多跟随 5 次重定向；每一跳均检查 URL，拒绝 localhost、直接输入的非公网 IP
+  最多跟随 5 次重定向；到达上限后仍收到重定向会明确报错，流式响应会关闭；每一跳均检查 URL，拒绝 localhost、直接输入的非公网 IP
   和带凭证 URL。不向目标发送 API key 或 cookies。
 - 抓取保留原始域名，使用标准 `httpx` 网络行为：有代理按代理配置请求，
   `NO_PROXY` 匹配时直连，没有代理时使用系统 DNS 和正常连接。
@@ -100,7 +101,7 @@ v2.10 模板与根目录模板一致；历史 v2.8/v2.9 模板只包含云节点
   旧的 `trusted_dns_networks` 和 `trusted_proxy_urls` 选项不再影响请求。
   HTTPS 始终校验证书，目标和 HTTPS 代理分别使用各自的 TLS 身份；
   证书信任沿用 `httpx` 的 `SSL_CERT_FILE`、`SSL_CERT_DIR` 配置。
-- 首版不运行 JavaScript，不处理登录或验证码，也不提供 PDF 提取、离线索引。
+- 本机节点不运行 JavaScript，不处理登录或验证码，也不提供 PDF 提取、离线索引。
   搜索引擎不可达、限流或网页无法提取时会明确失败；本机兜底不能保证任意网站可用。
 - 默认总预算会累加新增节点超时。若显式设置整次预算，须为末尾兜底留出时间；
   预算耗尽会停止尝试，客户端超时也应覆盖服务端预算。云节点原有超时仍决定兜底前
@@ -120,9 +121,11 @@ v2.10 模板与根目录模板一致；历史 v2.8/v2.9 模板只包含云节点
 | 本机 DDGS / HTML 抓取 | 无需凭证，需能访问搜索引擎或目标网页 |
 
 免费额度、开通条件和计费以供应商控制台为准。额度耗尽导致节点失败时
-自动切换下一节点，全部失败才报错。
+在剩余总预算内自动切换下一节点；全部节点真实失败或总预算耗尽时返回工具错误。
 
 ## 启动
+
+以下命令在仓库根目录执行；示例路径须替换为实际项目路径。
 
 ```powershell
 cd D:\Qianxv-search-mcp
@@ -198,12 +201,12 @@ HTTP 客户端应选择 Streamable HTTP 传输并填入该 URL。
   `%LOCALAPPDATA%\CodeBuddyExtension\Logs\CodeBuddyIDE\<日期>\<项目>.log`
   搜 `mcp-connect` 核对启动命令，具体位置以客户端版本为准。
 - 发行版真实 API 自检：`python release/test_release.py <隔离测试目录>`
-  （握手 / tools/list / search / extract 等共 8 项断言；需先配置有效密钥，
+  （握手 / tools/list / search / extract 等共 8 项断言；需先配置可用节点，云节点通常需要有效凭证，
   会请求外部服务并消耗额度；私有配置仅放在 `release/_test/`，见下方验证步骤）。
 
 ## 工具说明
 
-以下分页说明适用于当前源码和 v2.10 发行版。
+以下分页说明适用于当前源码及保留的 v2.9、v2.10 发行版。
 历史 v2.0 和 v2.1 仅支持 `extract(url)`，正文超过 8000 字符会截断，
 不提供 `offset`、`snapshot_id` 或续读能力。
 
@@ -234,7 +237,7 @@ HTTP 客户端应选择 Streamable HTTP 传输并填入该 URL。
 
 ```powershell
 ruff check .            # lint
-python -m pytest tests/ --basetemp=release/_test/source-pytest -q
+python -m pytest tests/ --basetemp=release/_test/source-pytest -q -rs
 ```
 
 未设置 `MCP_TEST_EXE` 时发行版测试会跳过，源码测试通过不等于发行版通过。
@@ -266,8 +269,11 @@ Python/pytest/ruff 缓存时可先预览再执行：
 ```powershell
 Expand-Archive .\release\search-mcp-v2.10.zip .\release\_test\v2.10-smoke
 $env:MCP_TEST_EXE = (Resolve-Path .\release\_test\v2.10-smoke\search-mcp-v2.10\search-mcp.exe).Path
-python -m pytest tests/ --basetemp=release/_test/v2.10-pytest -q
-Remove-Item Env:MCP_TEST_EXE
+try {
+    python -m pytest tests/ --basetemp=release/_test/v2.10-pytest -q -rs
+} finally {
+    Remove-Item Env:MCP_TEST_EXE
+}
 ```
 
 测试包含三种传输模式、端口冲突、每种模式重复启动 5 次及 3 实例并发，
@@ -283,6 +289,10 @@ python release/test_release.py release/_test/v2.10-smoke/search-mcp-v2.10
 网络或供应商失败需单独报告，不能用传输测试替代真实调用结论。
 测试配置、日志和备份均留在被忽略的 `release/_test/`。
 
+保留的 v2.9 按同样步骤替换版本路径验证；它不支持本机节点，相关测试的跳过数量和原因须单独记录。
+v2.10 的本机节点测试不得因模板缺失而跳过。公开发行目录与 ZIP 解压目录须逐文件核对清单和 SHA-256，
+且不得含私有配置、日志或测试产物；文件校验应在向隔离目录复制私有配置之前完成。
+
 ## 目录结构
 
 ```
@@ -297,10 +307,16 @@ logs/              运行日志
 build.ps1          构建并检查目录发行版产物
 clean.ps1          清理构建与缓存，支持 -WhatIf
 search-mcp.spec    Windows 目录发行版构建配置
-release/           v2.8/v2.9 历史发行版、v2.10 发行版及 ZIP + test_release.py
+release/           v2.9 历史发行版、v2.10 发行版及 ZIP + test_release.py
 ```
 
 ## 更新日志
+
+### v2.10 文档与发行包更新（2026-10-10）
+
+- 原地重建 v2.10，保持版本号、工具签名和配置兼容；同步 v2.9 文档与 ZIP。
+- 整理安装、配置、网络与验证说明；保留 v2.9 发行包，移除 v2.8 目录与 ZIP，历史更新记录保留。
+- 补充本机节点重定向边界、云适配器及运行时路径回归测试，统一重定向耗尽的错误路径。
 
 ### v2.10（2026-10-08）
 

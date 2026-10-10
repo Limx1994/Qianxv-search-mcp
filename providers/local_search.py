@@ -132,8 +132,10 @@ class LocalSearchProvider(SearchProvider):
                     if response.status_code not in (301, 302, 303, 307, 308):
                         break
                     location = response.headers.get("location")
-                    if not location or index == 3:
+                    if not location:
                         raise ProviderError(self.name, "invalid Bing redirect")
+                    if index == 3:
+                        continue
                     target = target.join(location)
                     if (
                         target.scheme != "https" or target.port not in (None, 443)
@@ -141,6 +143,8 @@ class LocalSearchProvider(SearchProvider):
                         or target.username or target.password
                     ):
                         raise ProviderError(self.name, "unsafe Bing redirect")
+                else:
+                    raise ProviderError(self.name, "invalid Bing redirect")
             if response.status_code != 200:
                 raise ProviderError(self.name, f"Bing HTTP {response.status_code}")
             if response.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "text/html":

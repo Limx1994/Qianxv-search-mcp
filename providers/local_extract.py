@@ -104,7 +104,7 @@ class LocalExtractProvider(ExtractProvider):
                     if not location:
                         raise ProviderError(self.name, "redirect without Location")
                     if index == _MAX_REDIRECTS:
-                        raise ProviderError(self.name, "too many redirects")
+                        continue
                     url = str(original.join(location))
                     continue
                 if not 200 <= response.status_code < 300:

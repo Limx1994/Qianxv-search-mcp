@@ -119,3 +119,54 @@ def test_anysearch_optional_fields(monkeypatch):
         return {}
     monkeypatch.setattr(provider, "_post_json", respond)
     assert asyncio.run(provider.search("q", 1)) == []
+
+
+@pytest.mark.parametrize("kind,limit", [("extract", 5), ("bing", 3)])
+@pytest.mark.parametrize("case", ["success", "overflow", "missing", "unsafe"])
+def test_redirect_final_response(kind, limit, case):
+    cls = (local_extract.LocalExtractProvider if kind == "extract"
+           else local_search.LocalSearchProvider)
+    provider = make_provider(cls, {"backend": "bing_html"})
+    requests = []
+    responses = []
+    host = "example.test" if kind == "extract" else "www.bing.com"
+    html = '<li class="b_algo"><h2><a href="https://example.test">Title</a></h2><p>Body</p></li>'
+
+    def respond(request):
+        requests.append(request)
+        final = len(requests) == limit + 1
+        if final and case == "success":
+            response = httpx.Response(200, headers={"content-type": "text/html"}, text=html)
+        else:
+            location = "/next"
+            if final and case == "unsafe":
+                location = "http://localhost/private"
+            headers = {} if final and case == "missing" else {"location": location}
+            response = httpx.Response(302, headers=headers)
+        responses.append(response)
+        return response
+
+    async def exercise():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            provider._http_client = client
+            if kind == "extract":
+                call = provider._download(client, f"https://{host}/start")
+            else:
+                call = provider.search("q", 1)
+            if case == "success":
+                result = await call
+                if kind == "extract":
+                    assert result == (html.encode(), f"https://{host}/next")
+                else:
+                    assert result[0].title == "Title"
+            else:
+                reason = ("without Location" if case == "missing" else "too many redirects"
+                          ) if kind == "extract" else "invalid Bing redirect"
+                with pytest.raises(ProviderError, match=reason):
+                    await call
+            assert not client.is_closed
+        assert len(requests) == limit + 1
+        assert all(response.is_closed for response in responses)
+        assert all(request.url.host == host for request in requests)
+
+    asyncio.run(exercise())
